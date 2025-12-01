@@ -1,0 +1,5 @@
+{
+  "name": "VisaTax",
+  "description": "A specialized tax estimator for International Students (F-1) and Workers (H-1B) in the US, accounting for FICA exemptions and tax treaties.",
+  "requestFramePermissions": []
+}
