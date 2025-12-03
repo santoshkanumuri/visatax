@@ -65,7 +65,19 @@ function App() {
   const hasFieldError = (field: keyof UserInput) => getFieldErrors(field).some(e => e.severity === 'error');
   const hasFieldWarning = (field: keyof UserInput) => getFieldErrors(field).some(e => e.severity === 'warning');
 
-  const results = useMemo(() => calculateTax(formData), [formData]);
+  // Calculate results with explicit dependencies to ensure recalculation on any change
+  const results = useMemo(() => calculateTax(formData), [
+    formData.visaStatus,
+    formData.country,
+    formData.yearsInUS,
+    formData.state,
+    formData.payFrequency,
+    formData.grossPay,
+    formData.preTaxDeductions,
+    formData.federalTaxPaid,
+    formData.filingStatus,
+    formData.taxYear
+  ]);
 
   const currentStateInfo = useMemo(() => 
     STATES_LIST.find(s => s.name === formData.state), 
