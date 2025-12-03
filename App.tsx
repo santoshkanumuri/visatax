@@ -22,6 +22,7 @@ interface AiVerificationResponse {
     fica_check: string;
     standard_deduction_check: string;
     state_tax_check: string;
+    refund_check: string;
   };
   summary: string;
 }
@@ -202,6 +203,7 @@ function App() {
         2. Compare your calculations with the "App Calculated Results" provided.
         3. Verify the FICA exemption logic (F1 exempt for first 5 calendar years).
         4. Verify the State Tax estimate reasonableness for ${formData.state}.
+        5. Verify the refund/owe calculations based on withholdings vs liability.
         
         User Profile:
         - Visa: ${formData.visaStatus}
@@ -213,10 +215,19 @@ function App() {
         - Gross Annual Pay: ${results.grossPay}
         - Pre-Tax Deductions: ${getAnnualAmount(formData.preTaxDeductions, formData.payFrequency)}
         
+        Withholdings (YTD):
+        - Federal Tax Withheld: ${getAnnualAmount(formData.federalTaxPaid, formData.payFrequency)}
+        - FICA Tax Withheld: ${getAnnualAmount(formData.ficaWithheld, formData.payFrequency)}
+        - State Tax Withheld: ${getAnnualAmount(formData.stateTaxWithheld, formData.payFrequency)}
+        
         App Calculated Results (for comparison):
-        - FICA Tax: ${results.ficaTax}
-        - Federal Tax: ${results.federalTaxLiability}
-        - State Tax: ${results.stateTax}
+        - Federal Tax Liability: ${results.federalTaxLiability}
+        - FICA Tax Liability: ${results.ficaTax}
+        - State Tax Liability: ${results.stateTax}
+        - Federal Refund/Owe: ${results.refundOrOwe} (positive = refund)
+        - FICA Refund/Owe: ${results.ficaRefundOrOwe} (positive = refund)
+        - State Refund/Owe: ${results.stateRefundOrOwe} (positive = refund)
+        - Total Refund/Owe: ${results.totalRefundOrOwe} (positive = refund)
         
         Output Requirement:
         Return ONLY a raw JSON object matching the requested schema. No markdown formatting.
@@ -247,7 +258,8 @@ function App() {
                 properties: {
                   fica_check: { type: Type.STRING },
                   standard_deduction_check: { type: Type.STRING },
-                  state_tax_check: { type: Type.STRING }
+                  state_tax_check: { type: Type.STRING },
+                  refund_check: { type: Type.STRING }
                 }
               },
               summary: { type: Type.STRING }
@@ -968,11 +980,17 @@ function App() {
                             </div>
                             <p className="text-sm text-slate-600 leading-relaxed">{aiAnalysis.analysis.standard_deduction_check}</p>
                          </div>
-                         <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm md:col-span-2">
+                         <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
                             <div className="flex items-center gap-2 mb-2 text-slate-600 font-semibold text-xs uppercase">
                               <MapPin size={14} /> State Tax Assessment
                             </div>
                             <p className="text-sm text-slate-600 leading-relaxed">{aiAnalysis.analysis.state_tax_check}</p>
+                         </div>
+                         <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+                            <div className="flex items-center gap-2 mb-2 text-amber-600 font-semibold text-xs uppercase">
+                              <Calculator size={14} /> Refund/Owe Verification
+                            </div>
+                            <p className="text-sm text-slate-600 leading-relaxed">{aiAnalysis.analysis.refund_check}</p>
                          </div>
                       </div>
                       <div className="mt-4 pt-4 border-t border-slate-200">

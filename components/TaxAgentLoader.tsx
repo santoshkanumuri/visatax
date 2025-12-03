@@ -1,7 +1,27 @@
 
-import React from 'react';
+import React, { useState, useEffect } from 'react';
+
+const LOADING_STEPS = [
+  { text: 'Analyzing tax profile...', icon: '👤' },
+  { text: 'Calculating federal tax liability...', icon: '🏛️' },
+  { text: 'Verifying FICA exemption status...', icon: '🔍' },
+  { text: 'Checking state tax rates...', icon: '📍' },
+  { text: 'Computing withholdings vs liability...', icon: '⚖️' },
+  { text: 'Validating refund calculations...', icon: '💰' },
+  { text: 'Cross-referencing IRS rules...', icon: '📋' },
+  { text: 'Finalizing verification report...', icon: '✅' },
+];
 
 export const TaxAgentLoader = () => {
+  const [currentStep, setCurrentStep] = useState(0);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setCurrentStep((prev) => (prev + 1) % LOADING_STEPS.length);
+    }, 1800);
+    return () => clearInterval(interval);
+  }, []);
+
   return (
     <div className="w-full flex flex-col items-center justify-center p-8 bg-white border border-indigo-100 rounded-2xl shadow-lg shadow-indigo-100 animate-in fade-in zoom-in-95 duration-300">
        <div className="relative w-40 h-40 mb-2">
@@ -54,14 +74,37 @@ export const TaxAgentLoader = () => {
 
          </svg>
        </div>
-       <div className="text-center space-y-2">
-         <h3 className="text-indigo-900 font-bold text-lg">Tax Agent is calculating...</h3>
-         <div className="flex items-center justify-center gap-2 text-slate-500 text-xs">
-           <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full animate-pulse"></span>
-           <span>Verifying Treaties</span>
-           <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full animate-pulse" style={{animationDelay: '0.2s'}}></span>
-           <span>Checking Brackets</span>
-           <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full animate-pulse" style={{animationDelay: '0.4s'}}></span>
+       <div className="text-center space-y-3">
+         <h3 className="text-indigo-900 font-bold text-lg">AI Tax Agent Verifying...</h3>
+         
+         {/* Current Step Display */}
+         <div className="flex items-center justify-center gap-2 bg-indigo-50 px-4 py-2 rounded-lg min-w-[280px]">
+           <span className="text-lg">{LOADING_STEPS[currentStep].icon}</span>
+           <span className="text-sm text-indigo-700 font-medium">{LOADING_STEPS[currentStep].text}</span>
+         </div>
+
+         {/* Progress Dots */}
+         <div className="flex items-center justify-center gap-1.5">
+           {LOADING_STEPS.map((_, index) => (
+             <div 
+               key={index}
+               className={`w-2 h-2 rounded-full transition-all duration-300 ${
+                 index === currentStep 
+                   ? 'bg-indigo-600 scale-125' 
+                   : index < currentStep 
+                     ? 'bg-indigo-400' 
+                     : 'bg-indigo-200'
+               }`}
+             />
+           ))}
+         </div>
+
+         {/* Verification Areas */}
+         <div className="flex flex-wrap items-center justify-center gap-2 text-[10px] text-slate-400 mt-2">
+           <span className={`px-2 py-1 rounded ${currentStep >= 1 ? 'bg-emerald-100 text-emerald-600' : 'bg-slate-100'}`}>Federal</span>
+           <span className={`px-2 py-1 rounded ${currentStep >= 2 ? 'bg-emerald-100 text-emerald-600' : 'bg-slate-100'}`}>FICA</span>
+           <span className={`px-2 py-1 rounded ${currentStep >= 3 ? 'bg-emerald-100 text-emerald-600' : 'bg-slate-100'}`}>State</span>
+           <span className={`px-2 py-1 rounded ${currentStep >= 5 ? 'bg-emerald-100 text-emerald-600' : 'bg-slate-100'}`}>Refunds</span>
          </div>
        </div>
     </div>
