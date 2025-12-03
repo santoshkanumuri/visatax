@@ -62,9 +62,21 @@ export const DEFAULT_FORM_VALUES = {
   GROSS_PAY: 85000,
   PRE_TAX_DEDUCTIONS: 2000,
   FEDERAL_TAX_PAID: 10000,
+  FICA_WITHHELD: 0,
+  STATE_TAX_WITHHELD: 0,
   YEARS_IN_US: 1,
   TAX_YEAR: 2025,
   STATE: 'Texas',
+};
+
+// ============================================
+// WITHHOLDING ESTIMATION DEFAULTS
+// ============================================
+export const WITHHOLDING_DEFAULTS = {
+  // FICA rate for non-exempt (SS 6.2% + Medicare 1.45%)
+  FICA_RATE: 0.0765,
+  // Default state withholding estimate (will use actual state rate if available)
+  DEFAULT_STATE_RATE: 0.05,
 };
 
 // ============================================

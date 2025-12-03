@@ -229,9 +229,15 @@ export const calculateTax = (input: UserInput): TaxResult => {
   const totalTaxLiability = federalTaxLiability + stateTax + ficaTax;
   const takeHomePay = grossPay - totalTaxLiability - preTaxDeductions;
   
-  // Refund / Owe (based on federal tax only - state withholding not tracked)
-  const totalPaid = getAnnualAmount(input.federalTaxPaid, input.payFrequency);
-  const refundOrOwe = totalPaid - federalTaxLiability;
+  // Refund / Owe calculations for each tax type
+  const federalPaid = getAnnualAmount(input.federalTaxPaid, input.payFrequency);
+  const ficaPaid = getAnnualAmount(input.ficaWithheld, input.payFrequency);
+  const statePaid = getAnnualAmount(input.stateTaxWithheld, input.payFrequency);
+  
+  const refundOrOwe = federalPaid - federalTaxLiability;
+  const ficaRefundOrOwe = ficaPaid - ficaTax;
+  const stateRefundOrOwe = statePaid - stateTax;
+  const totalRefundOrOwe = refundOrOwe + ficaRefundOrOwe + stateRefundOrOwe;
 
   return {
     grossPay,
@@ -246,6 +252,9 @@ export const calculateTax = (input: UserInput): TaxResult => {
     totalTaxLiability,
     takeHomePay,
     refundOrOwe,
+    ficaRefundOrOwe,
+    stateRefundOrOwe,
+    totalRefundOrOwe,
     effectiveTaxRate: grossPay > 0 ? totalTaxLiability / grossPay : 0,
     marginalTaxRate,
     messages,

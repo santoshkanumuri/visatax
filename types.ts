@@ -29,6 +29,8 @@ export interface UserInput {
   grossPay: number;
   preTaxDeductions: number;
   federalTaxPaid: number;
+  ficaWithheld: number;
+  stateTaxWithheld: number;
   filingStatus: FilingStatus;
   taxYear: number;
 }
@@ -64,6 +66,9 @@ export interface TaxResult {
   totalTaxLiability: number;
   takeHomePay: number;
   refundOrOwe: number;
+  ficaRefundOrOwe: number;
+  stateRefundOrOwe: number;
+  totalRefundOrOwe: number;
   effectiveTaxRate: number;
   marginalTaxRate: number;
   messages: string[];

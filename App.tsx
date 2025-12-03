@@ -3,7 +3,7 @@ import React, { useState, useMemo, useCallback } from 'react';
 import { Calculator, MapPin, Calendar, Globe, ChevronRight, ChevronDown, AlertCircle, CheckCircle2, Info, ArrowRight, Sparkles, Loader2, Bot, Users, Printer, ShieldCheck, AlertTriangle } from 'lucide-react';
 import { GoogleGenAI, Type } from "@google/genai";
 import { VisaStatus, Country, PayFrequency, UserInput, FilingStatus, ValidationError } from './types';
-import { STATES_LIST, TAX_DATA, DEFAULT_FORM_VALUES, INPUT_LIMITS, PAY_PERIOD_CONSTANTS, FICA_CONSTANTS } from './constants';
+import { STATES_LIST, TAX_DATA, DEFAULT_FORM_VALUES, INPUT_LIMITS, PAY_PERIOD_CONSTANTS, FICA_CONSTANTS, WITHHOLDING_DEFAULTS } from './constants';
 import { calculateTax, getAnnualAmount } from './services/taxCalculator';
 import { InputGroup } from './components/InputGroup';
 import { ResultChart } from './components/ResultChart';
@@ -36,6 +36,8 @@ function App() {
     grossPay: DEFAULT_FORM_VALUES.GROSS_PAY,
     preTaxDeductions: DEFAULT_FORM_VALUES.PRE_TAX_DEDUCTIONS,
     federalTaxPaid: DEFAULT_FORM_VALUES.FEDERAL_TAX_PAID,
+    ficaWithheld: DEFAULT_FORM_VALUES.FICA_WITHHELD,
+    stateTaxWithheld: DEFAULT_FORM_VALUES.STATE_TAX_WITHHELD,
     filingStatus: FilingStatus.SINGLE,
     taxYear: DEFAULT_FORM_VALUES.TAX_YEAR
   });
@@ -75,6 +77,8 @@ function App() {
     formData.grossPay,
     formData.preTaxDeductions,
     formData.federalTaxPaid,
+    formData.ficaWithheld,
+    formData.stateTaxWithheld,
     formData.filingStatus,
     formData.taxYear
   ]);
@@ -82,6 +86,29 @@ function App() {
   const currentStateInfo = useMemo(() => 
     STATES_LIST.find(s => s.name === formData.state), 
   [formData.state]);
+
+  // Calculate suggested FICA withholding based on visa status and years in US
+  const suggestedFicaWithholding = useMemo(() => {
+    const annualGross = getAnnualAmount(formData.grossPay, formData.payFrequency);
+    // F-1 students under 5 years are FICA exempt
+    if (formData.visaStatus === VisaStatus.F1 && formData.yearsInUS <= FICA_CONSTANTS.F1_EXEMPTION_CALENDAR_YEARS) {
+      return 0;
+    }
+    // Otherwise, calculate standard FICA (SS 6.2% + Medicare 1.45% = 7.65%)
+    return Math.round(annualGross * WITHHOLDING_DEFAULTS.FICA_RATE);
+  }, [formData.grossPay, formData.payFrequency, formData.visaStatus, formData.yearsInUS]);
+
+  // Calculate suggested state tax withholding based on state rate
+  const suggestedStateWithholding = useMemo(() => {
+    const annualGross = getAnnualAmount(formData.grossPay, formData.payFrequency);
+    const stateInfo = STATES_LIST.find(s => s.name === formData.state);
+    if (!stateInfo || stateInfo.category === 'none') {
+      return 0; // No state income tax
+    }
+    // Use average of min and max rate as a reasonable estimate
+    const estimatedRate = (stateInfo.minRate + stateInfo.maxRate) / 2;
+    return Math.round(annualGross * estimatedRate);
+  }, [formData.grossPay, formData.payFrequency, formData.state]);
 
   const taxYearLimits = useMemo(() => 
     TAX_DATA[formData.taxYear as keyof typeof TAX_DATA]?.LIMITS || TAX_DATA[2025].LIMITS, 
@@ -521,6 +548,54 @@ function App() {
                       </p>
                     ))}
                   </InputGroup>
+
+                  <InputGroup label="FICA Tax Withheld (YTD)" tooltip="Social Security + Medicare taxes withheld from your paystubs. F-1 students under 5 years are typically exempt.">
+                    <div className="relative">
+                      <div className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
+                        <span className="text-slate-400 font-bold">$</span>
+                      </div>
+                      <input 
+                        type="number" 
+                        min={0}
+                        className={`w-full pl-7 bg-slate-50 border text-slate-900 text-sm font-medium rounded-xl hover:border-blue-400 focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 block p-3 transition-all outline-none ${hasFieldError('ficaWithheld') ? 'border-red-300 bg-red-50' : hasFieldWarning('ficaWithheld') ? 'border-amber-300 bg-amber-50' : 'border-slate-200'}`}
+                        value={formData.ficaWithheld}
+                        onChange={(e) => handleInputChange('ficaWithheld', parseFloat(e.target.value) || 0)}
+                      />
+                    </div>
+                    {/* Quick Fill Helper */}
+                    <div className="flex gap-2 mt-1">
+                      <button 
+                        onClick={() => handleInputChange('ficaWithheld', suggestedFicaWithholding)}
+                        className="text-[10px] bg-slate-100 hover:bg-slate-200 text-slate-600 px-2 py-1 rounded transition-colors"
+                      >
+                        {suggestedFicaWithholding === 0 ? '✓ FICA Exempt (F-1 < 5 yrs)' : `Est. ${formatCurrency(suggestedFicaWithholding)}`}
+                      </button>
+                    </div>
+                  </InputGroup>
+
+                  <InputGroup label="State Tax Withheld (YTD)" tooltip="State income tax withheld from your paystubs. Some states like Texas have no income tax.">
+                    <div className="relative">
+                      <div className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
+                        <span className="text-slate-400 font-bold">$</span>
+                      </div>
+                      <input 
+                        type="number" 
+                        min={0}
+                        className={`w-full pl-7 bg-slate-50 border text-slate-900 text-sm font-medium rounded-xl hover:border-blue-400 focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 block p-3 transition-all outline-none ${hasFieldError('stateTaxWithheld') ? 'border-red-300 bg-red-50' : hasFieldWarning('stateTaxWithheld') ? 'border-amber-300 bg-amber-50' : 'border-slate-200'}`}
+                        value={formData.stateTaxWithheld}
+                        onChange={(e) => handleInputChange('stateTaxWithheld', parseFloat(e.target.value) || 0)}
+                      />
+                    </div>
+                    {/* Quick Fill Helper */}
+                    <div className="flex gap-2 mt-1">
+                      <button 
+                        onClick={() => handleInputChange('stateTaxWithheld', suggestedStateWithholding)}
+                        className="text-[10px] bg-slate-100 hover:bg-slate-200 text-slate-600 px-2 py-1 rounded transition-colors"
+                      >
+                        {suggestedStateWithholding === 0 ? '✓ No State Tax' : `Est. ${formatCurrency(suggestedStateWithholding)}`}
+                      </button>
+                    </div>
+                  </InputGroup>
                 </div>
               </div>
             </div>
@@ -742,32 +817,63 @@ function App() {
             </div>
 
             {/* Refund / Owe Banner */}
-            <div className={`rounded-2xl shadow-lg border overflow-hidden ${results.refundOrOwe >= 0 ? 'bg-emerald-600 border-emerald-500' : 'bg-white border-rose-200'}`}>
+            <div className={`rounded-2xl shadow-lg border overflow-hidden ${results.totalRefundOrOwe >= 0 ? 'bg-emerald-600 border-emerald-500' : 'bg-white border-rose-200'}`}>
                <div className="p-6 md:p-8 flex flex-col md:flex-row items-center justify-between gap-6">
                  <div className="flex items-start gap-4">
-                    <div className={`p-3 rounded-full shrink-0 ${results.refundOrOwe >= 0 ? 'bg-emerald-500 text-white' : 'bg-rose-100 text-rose-600'}`}>
-                      {results.refundOrOwe >= 0 ? <CheckCircle2 size={32} /> : <AlertCircle size={32} />}
+                    <div className={`p-3 rounded-full shrink-0 ${results.totalRefundOrOwe >= 0 ? 'bg-emerald-500 text-white' : 'bg-rose-100 text-rose-600'}`}>
+                      {results.totalRefundOrOwe >= 0 ? <CheckCircle2 size={32} /> : <AlertCircle size={32} />}
                     </div>
                     <div>
-                      <p className={`text-sm font-bold uppercase tracking-wider mb-1 ${results.refundOrOwe >= 0 ? 'text-emerald-100' : 'text-rose-600'}`}>
-                        {results.refundOrOwe >= 0 ? 'Estimated Refund' : 'Estimated Amount You Owe'}
+                      <p className={`text-sm font-bold uppercase tracking-wider mb-1 ${results.totalRefundOrOwe >= 0 ? 'text-emerald-100' : 'text-rose-600'}`}>
+                        {results.totalRefundOrOwe >= 0 ? 'Total Estimated Refund' : 'Total Estimated Amount You Owe'}
                       </p>
-                      <h2 className={`text-3xl font-bold ${results.refundOrOwe >= 0 ? 'text-white' : 'text-slate-900'}`}>
-                        {formatCurrency(Math.abs(results.refundOrOwe))}
+                      <h2 className={`text-3xl font-bold ${results.totalRefundOrOwe >= 0 ? 'text-white' : 'text-slate-900'}`}>
+                        {formatCurrency(Math.abs(results.totalRefundOrOwe))}
                       </h2>
-                      <p className={`text-sm mt-2 max-w-md ${results.refundOrOwe >= 0 ? 'text-emerald-100' : 'text-slate-500'}`}>
-                        {results.refundOrOwe >= 0 
+                      <p className={`text-sm mt-2 max-w-md ${results.totalRefundOrOwe >= 0 ? 'text-emerald-100' : 'text-slate-500'}`}>
+                        {results.totalRefundOrOwe >= 0 
                           ? "Based on your inputs, you've withheld enough to cover your liability." 
                           : "You may need to save this amount to pay your tax bill in April."}
                       </p>
                     </div>
                  </div>
                  
-                 {results.refundOrOwe < 0 && (
+                 {results.totalRefundOrOwe < 0 && (
                    <div className="bg-rose-50 px-4 py-3 rounded-lg border border-rose-100 text-rose-700 text-xs max-w-xs">
                      <strong>Tip:</strong> Consider adjusting your W-4 withholding or making estimated tax payments to avoid penalties.
                    </div>
                  )}
+               </div>
+               
+               {/* Breakdown by tax type */}
+               <div className={`px-6 pb-6 grid grid-cols-3 gap-4 ${results.totalRefundOrOwe >= 0 ? 'bg-emerald-600' : 'bg-white border-t border-slate-100'}`}>
+                 <div className={`text-center p-3 rounded-lg ${results.totalRefundOrOwe >= 0 ? 'bg-emerald-500/50' : 'bg-slate-50'}`}>
+                   <p className={`text-xs font-medium mb-1 ${results.totalRefundOrOwe >= 0 ? 'text-emerald-100' : 'text-slate-500'}`}>Federal</p>
+                   <p className={`text-lg font-bold ${results.refundOrOwe >= 0 ? (results.totalRefundOrOwe >= 0 ? 'text-white' : 'text-emerald-600') : 'text-rose-600'}`}>
+                     {formatCurrency(Math.abs(results.refundOrOwe))}
+                   </p>
+                   <p className={`text-[10px] font-medium mt-0.5 ${results.totalRefundOrOwe >= 0 ? 'text-emerald-200' : (results.refundOrOwe >= 0 ? 'text-emerald-500' : 'text-rose-500')}`}>
+                     {results.refundOrOwe >= 0 ? '↑ Refund' : '↓ Owe'}
+                   </p>
+                 </div>
+                 <div className={`text-center p-3 rounded-lg ${results.totalRefundOrOwe >= 0 ? 'bg-emerald-500/50' : 'bg-slate-50'}`}>
+                   <p className={`text-xs font-medium mb-1 ${results.totalRefundOrOwe >= 0 ? 'text-emerald-100' : 'text-slate-500'}`}>FICA</p>
+                   <p className={`text-lg font-bold ${results.ficaRefundOrOwe >= 0 ? (results.totalRefundOrOwe >= 0 ? 'text-white' : 'text-emerald-600') : 'text-rose-600'}`}>
+                     {formatCurrency(Math.abs(results.ficaRefundOrOwe))}
+                   </p>
+                   <p className={`text-[10px] font-medium mt-0.5 ${results.totalRefundOrOwe >= 0 ? 'text-emerald-200' : (results.ficaRefundOrOwe >= 0 ? 'text-emerald-500' : 'text-rose-500')}`}>
+                     {results.ficaRefundOrOwe >= 0 ? (results.ficaBreakdown.isExempt ? '✓ Exempt' : '↑ Refund') : '↓ Owe'}
+                   </p>
+                 </div>
+                 <div className={`text-center p-3 rounded-lg ${results.totalRefundOrOwe >= 0 ? 'bg-emerald-500/50' : 'bg-slate-50'}`}>
+                   <p className={`text-xs font-medium mb-1 ${results.totalRefundOrOwe >= 0 ? 'text-emerald-100' : 'text-slate-500'}`}>State</p>
+                   <p className={`text-lg font-bold ${results.stateRefundOrOwe >= 0 ? (results.totalRefundOrOwe >= 0 ? 'text-white' : 'text-emerald-600') : 'text-rose-600'}`}>
+                     {formatCurrency(Math.abs(results.stateRefundOrOwe))}
+                   </p>
+                   <p className={`text-[10px] font-medium mt-0.5 ${results.totalRefundOrOwe >= 0 ? 'text-emerald-200' : (results.stateRefundOrOwe >= 0 ? 'text-emerald-500' : 'text-rose-500')}`}>
+                     {results.stateTax === 0 ? '✓ No State Tax' : (results.stateRefundOrOwe >= 0 ? '↑ Refund' : '↓ Owe')}
+                   </p>
+                 </div>
                </div>
             </div>
             
