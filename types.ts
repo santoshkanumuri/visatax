@@ -41,6 +41,16 @@ export interface BracketDetail {
   taxAmount: number;
 }
 
+// FICA Tax Breakdown for detailed reporting
+export interface FICABreakdown {
+  socialSecurityTax: number;
+  medicareTax: number;
+  additionalMedicareTax: number;
+  totalFICA: number;
+  isExempt: boolean;
+  exemptionReason?: string;
+}
+
 export interface TaxResult {
   grossPay: number;
   adjustedGrossIncome: number;
@@ -49,6 +59,7 @@ export interface TaxResult {
   federalTaxLiability: number;
   federalBreakdown: BracketDetail[];
   ficaTax: number;
+  ficaBreakdown: FICABreakdown;
   stateTax: number;
   totalTaxLiability: number;
   takeHomePay: number;
@@ -57,6 +68,19 @@ export interface TaxResult {
   marginalTaxRate: number;
   messages: string[];
   stateRateUsed: number;
+}
+
+// Input Validation
+export interface ValidationError {
+  field: keyof UserInput;
+  message: string;
+  severity: 'error' | 'warning';
+}
+
+export interface ValidationResult {
+  isValid: boolean;
+  errors: ValidationError[];
+  warnings: ValidationError[];
 }
 
 export type StateTaxCategory = 'none' | 'flat' | 'graduated';

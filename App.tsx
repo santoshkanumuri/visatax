@@ -1,10 +1,10 @@
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useCallback } from 'react';
 import { Calculator, MapPin, Calendar, Globe, ChevronRight, ChevronDown, AlertCircle, CheckCircle2, Info, ArrowRight, Sparkles, Loader2, Bot, Users, Printer, ShieldCheck, AlertTriangle } from 'lucide-react';
 import { GoogleGenAI, Type } from "@google/genai";
-import { VisaStatus, Country, PayFrequency, UserInput, FilingStatus } from './types';
-import { STATES_LIST, TAX_DATA } from './constants';
-import { calculateTax } from './services/taxCalculator';
+import { VisaStatus, Country, PayFrequency, UserInput, FilingStatus, ValidationError } from './types';
+import { STATES_LIST, TAX_DATA, DEFAULT_FORM_VALUES, INPUT_LIMITS, PAY_PERIOD_CONSTANTS, FICA_CONSTANTS } from './constants';
+import { calculateTax, getAnnualAmount } from './services/taxCalculator';
 import { InputGroup } from './components/InputGroup';
 import { ResultChart } from './components/ResultChart';
 import { Tooltip } from './components/Tooltip';
@@ -30,25 +30,40 @@ function App() {
   const [formData, setFormData] = useState<UserInput>({
     visaStatus: VisaStatus.F1,
     country: Country.INDIA,
-    yearsInUS: 1,
-    state: 'Texas',
+    yearsInUS: DEFAULT_FORM_VALUES.YEARS_IN_US,
+    state: DEFAULT_FORM_VALUES.STATE,
     payFrequency: PayFrequency.YEARLY,
-    grossPay: 85000,
-    preTaxDeductions: 2000,
-    federalTaxPaid: 10000,
+    grossPay: DEFAULT_FORM_VALUES.GROSS_PAY,
+    preTaxDeductions: DEFAULT_FORM_VALUES.PRE_TAX_DEDUCTIONS,
+    federalTaxPaid: DEFAULT_FORM_VALUES.FEDERAL_TAX_PAID,
     filingStatus: FilingStatus.SINGLE,
-    taxYear: 2025
+    taxYear: DEFAULT_FORM_VALUES.TAX_YEAR
   });
 
   const [isBreakdownExpanded, setIsBreakdownExpanded] = useState(false);
   const [aiAnalysis, setAiAnalysis] = useState<AiVerificationResponse | null>(null);
   const [isVerifying, setIsVerifying] = useState(false);
   const [takeHomePeriod, setTakeHomePeriod] = useState<'yearly' | 'monthly' | 'biweekly'>('yearly');
+  const [validationErrors, setValidationErrors] = useState<ValidationError[]>([]);
 
   const handleInputChange = (field: keyof UserInput, value: any) => {
-    setFormData(prev => ({ ...prev, [field]: value }));
+    const newFormData = { ...formData, [field]: value };
+    setFormData(newFormData);
     setAiAnalysis(null); // Clear previous analysis on change
+    
+    // Run validation
+    const errors = validateInput(field, value, newFormData);
+    setValidationErrors(prev => {
+      // Remove old errors for this field, add new ones
+      const filtered = prev.filter(e => e.field !== field);
+      return [...filtered, ...errors];
+    });
   };
+
+  // Helper to get validation errors for a specific field
+  const getFieldErrors = (field: keyof UserInput) => validationErrors.filter(e => e.field === field);
+  const hasFieldError = (field: keyof UserInput) => getFieldErrors(field).some(e => e.severity === 'error');
+  const hasFieldWarning = (field: keyof UserInput) => getFieldErrors(field).some(e => e.severity === 'warning');
 
   const results = useMemo(() => calculateTax(formData), [formData]);
 
@@ -68,11 +83,61 @@ function App() {
 
   const getDisplayedTakeHome = () => {
     switch(takeHomePeriod) {
-      case 'monthly': return results.takeHomePay / 12;
-      case 'biweekly': return results.takeHomePay / 26;
+      case 'monthly': return results.takeHomePay / PAY_PERIOD_CONSTANTS.MONTHS_PER_YEAR;
+      case 'biweekly': return results.takeHomePay / PAY_PERIOD_CONSTANTS.BIWEEKLY_PERIODS_PER_YEAR;
       default: return results.takeHomePay;
     }
   };
+
+  // Input validation function
+  const validateInput = useCallback((field: keyof UserInput, value: any, currentFormData: UserInput): ValidationError[] => {
+    const errors: ValidationError[] = [];
+    const annualGross = getAnnualAmount(currentFormData.grossPay, currentFormData.payFrequency);
+    
+    switch(field) {
+      case 'grossPay':
+        if (value < INPUT_LIMITS.GROSS_PAY_MIN) {
+          errors.push({ field, message: 'Gross pay cannot be negative', severity: 'error' });
+        }
+        if (value > INPUT_LIMITS.GROSS_PAY_MAX) {
+          errors.push({ field, message: 'Please enter a realistic salary amount', severity: 'warning' });
+        }
+        break;
+      
+      case 'preTaxDeductions':
+        if (value < INPUT_LIMITS.PRE_TAX_DEDUCTIONS_MIN) {
+          errors.push({ field, message: 'Deductions cannot be negative', severity: 'error' });
+        }
+        const annualDeductions = getAnnualAmount(value, currentFormData.payFrequency);
+        if (annualDeductions > annualGross && annualGross > 0) {
+          errors.push({ field, message: 'Pre-tax deductions exceed gross pay', severity: 'error' });
+        }
+        break;
+      
+      case 'federalTaxPaid':
+        if (value < INPUT_LIMITS.FEDERAL_TAX_WITHHELD_MIN) {
+          errors.push({ field, message: 'Tax withheld cannot be negative', severity: 'error' });
+        }
+        const annualTaxPaid = getAnnualAmount(value, currentFormData.payFrequency);
+        if (annualTaxPaid > annualGross * INPUT_LIMITS.TAX_WITHHELD_WARNING_PERCENT && annualGross > 0) {
+          errors.push({ field, message: 'Tax withheld exceeds 50% of gross pay - please verify', severity: 'warning' });
+        }
+        break;
+      
+      case 'yearsInUS':
+        if (value < INPUT_LIMITS.YEARS_IN_US_MIN) {
+          errors.push({ field, message: 'Years in US cannot be negative', severity: 'error' });
+        }
+        if (value > INPUT_LIMITS.YEARS_IN_US_MAX) {
+          errors.push({ field, message: 'Please enter a realistic number of years', severity: 'warning' });
+        }
+        if (value > INPUT_LIMITS.YEARS_IN_US_F1_WARNING && currentFormData.visaStatus === VisaStatus.F1) {
+          errors.push({ field, message: 'After 20+ years, you may have different tax status', severity: 'warning' });
+        }
+        break;
+    }
+    return errors;
+  }, []);
 
   const handlePrint = () => {
     window.print();
@@ -107,7 +172,7 @@ function App() {
         - Filing Status: ${formData.filingStatus}
         - Tax Year: ${formData.taxYear}
         - Gross Annual Pay: ${results.grossPay}
-        - Pre-Tax Deductions: ${formData.preTaxDeductions * (formData.payFrequency === PayFrequency.MONTHLY ? 12 : 1)}
+        - Pre-Tax Deductions: ${getAnnualAmount(formData.preTaxDeductions, formData.payFrequency)}
         
         App Calculated Results (for comparison):
         - FICA Tax: ${results.ficaTax}
@@ -254,14 +319,14 @@ function App() {
 
                   {/* F-1 Visual Timeline */}
                   {formData.visaStatus === VisaStatus.F1 && (
-                    <div className="bg-blue-50/50 rounded-xl p-4 border border-blue-100">
+                    <div className={`rounded-xl p-4 border ${formData.yearsInUS <= FICA_CONSTANTS.F1_EXEMPTION_CALENDAR_YEARS ? 'bg-blue-50/50 border-blue-100' : 'bg-amber-50/50 border-amber-100'}`}>
                        <div className="flex justify-between text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2">
-                          <span>Exempt (NRA)</span>
-                          <span>Resident (RA)</span>
+                          <span>FICA Exempt (NRA)</span>
+                          <span>FICA Applies (RA)</span>
                        </div>
                        <div className="relative h-2 bg-slate-200 rounded-full overflow-hidden flex">
                           <div className="w-5/6 h-full bg-blue-200"></div> {/* 5 years exempt */}
-                          <div className="w-1/6 h-full bg-slate-200"></div>
+                          <div className="w-1/6 h-full bg-amber-200"></div>
                        </div>
                        <div className="relative h-4 mt-1">
                           {/* Markers */}
@@ -274,34 +339,42 @@ function App() {
                           ))}
                           {/* Current Indicator */}
                           <div 
-                            className="absolute -top-1 w-3 h-3 bg-blue-600 rounded-full shadow border border-white transition-all duration-300"
+                            className={`absolute -top-1 w-3 h-3 rounded-full shadow border border-white transition-all duration-300 ${formData.yearsInUS <= FICA_CONSTANTS.F1_EXEMPTION_CALENDAR_YEARS ? 'bg-blue-600' : 'bg-amber-500'}`}
                             style={{ 
                               left: `${Math.min(((formData.yearsInUS)/6)*100, 100)}%`,
                               transform: 'translateX(-50%)'
                             }}
                           ></div>
                        </div>
-                       <p className="text-xs text-blue-800 font-medium mt-1 text-center">
-                         {formData.yearsInUS <= 5 
-                           ? `Year ${formData.yearsInUS}: FICA Exempt`
-                           : `Year ${formData.yearsInUS}: Likely Resident (FICA Applies)`}
+                       <p className={`text-xs font-medium mt-1 text-center ${formData.yearsInUS <= FICA_CONSTANTS.F1_EXEMPTION_CALENDAR_YEARS ? 'text-blue-800' : 'text-amber-800'}`}>
+                         {formData.yearsInUS <= FICA_CONSTANTS.F1_EXEMPTION_CALENDAR_YEARS 
+                           ? `Calendar Year ${formData.yearsInUS}: FICA Exempt`
+                           : `Calendar Year ${formData.yearsInUS}: FICA Applies (SS + Medicare)`}
+                       </p>
+                       <p className="text-[10px] text-slate-500 mt-1 text-center">
+                         Any partial calendar year of physical presence counts as a full year
                        </p>
                     </div>
                   )}
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
-                    <InputGroup label="Years in US" tooltip="F-1 students are exempt from FICA taxes only for their first 5 calendar years in the US.">
+                    <InputGroup label="Calendar Years in US" tooltip={`F-1 students are exempt from FICA taxes for their first ${FICA_CONSTANTS.F1_EXEMPTION_CALENDAR_YEARS} calendar years of physical presence in the US. A partial year counts as a full calendar year.`}>
                       <div className="relative">
                         <input 
                           type="number" 
-                          min="0"
-                          max="50"
-                          className="w-full bg-slate-50 border border-slate-200 text-slate-900 text-sm font-medium rounded-xl hover:border-blue-400 focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 block p-3 transition-all outline-none"
+                          min={INPUT_LIMITS.YEARS_IN_US_MIN}
+                          max={INPUT_LIMITS.YEARS_IN_US_MAX}
+                          className={`w-full bg-slate-50 border text-slate-900 text-sm font-medium rounded-xl hover:border-blue-400 focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 block p-3 transition-all outline-none ${hasFieldError('yearsInUS') ? 'border-red-300 bg-red-50' : hasFieldWarning('yearsInUS') ? 'border-amber-300 bg-amber-50' : 'border-slate-200'}`}
                           value={formData.yearsInUS}
                           onChange={(e) => handleInputChange('yearsInUS', parseInt(e.target.value) || 0)}
                         />
                         <Calendar size={16} className="absolute right-3 top-3.5 text-slate-400 pointer-events-none" />
                       </div>
+                      {getFieldErrors('yearsInUS').map((err, i) => (
+                        <p key={i} className={`text-xs mt-1 ${err.severity === 'error' ? 'text-red-600' : 'text-amber-600'}`}>
+                          {err.message}
+                        </p>
+                      ))}
                     </InputGroup>
 
                     <InputGroup label="State" tooltip="State tax rates vary significantly.">
@@ -369,11 +442,17 @@ function App() {
                       </div>
                       <input 
                         type="number" 
-                        className="w-full pl-7 bg-slate-50 border border-slate-200 text-slate-900 text-sm font-medium rounded-xl hover:border-blue-400 focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 block p-3 transition-all outline-none"
+                        min={INPUT_LIMITS.GROSS_PAY_MIN}
+                        className={`w-full pl-7 bg-slate-50 border text-slate-900 text-sm font-medium rounded-xl hover:border-blue-400 focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 block p-3 transition-all outline-none ${hasFieldError('grossPay') ? 'border-red-300 bg-red-50' : hasFieldWarning('grossPay') ? 'border-amber-300 bg-amber-50' : 'border-slate-200'}`}
                         value={formData.grossPay}
                         onChange={(e) => handleInputChange('grossPay', parseFloat(e.target.value) || 0)}
                       />
                     </div>
+                    {getFieldErrors('grossPay').map((err, i) => (
+                      <p key={i} className={`text-xs mt-1 ${err.severity === 'error' ? 'text-red-600' : 'text-amber-600'}`}>
+                        {err.message}
+                      </p>
+                    ))}
                   </InputGroup>
 
                   <InputGroup label="Pre-Tax Deductions (401k/HSA)" tooltip="Money taken out for retirement or health insurance before tax.">
@@ -383,11 +462,17 @@ function App() {
                       </div>
                       <input 
                         type="number" 
-                        className="w-full pl-7 bg-slate-50 border border-slate-200 text-slate-900 text-sm font-medium rounded-xl hover:border-blue-400 focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 block p-3 transition-all outline-none"
+                        min={INPUT_LIMITS.PRE_TAX_DEDUCTIONS_MIN}
+                        className={`w-full pl-7 bg-slate-50 border text-slate-900 text-sm font-medium rounded-xl hover:border-blue-400 focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 block p-3 transition-all outline-none ${hasFieldError('preTaxDeductions') ? 'border-red-300 bg-red-50' : hasFieldWarning('preTaxDeductions') ? 'border-amber-300 bg-amber-50' : 'border-slate-200'}`}
                         value={formData.preTaxDeductions}
                         onChange={(e) => handleInputChange('preTaxDeductions', parseFloat(e.target.value) || 0)}
                       />
                     </div>
+                    {getFieldErrors('preTaxDeductions').map((err, i) => (
+                      <p key={i} className={`text-xs mt-1 ${err.severity === 'error' ? 'text-red-600' : 'text-amber-600'}`}>
+                        {err.message}
+                      </p>
+                    ))}
                     {/* Quick Fill Helpers */}
                     <div className="flex gap-2 mt-1">
                       <button 
@@ -412,11 +497,17 @@ function App() {
                       </div>
                       <input 
                         type="number" 
-                        className="w-full pl-7 bg-slate-50 border border-slate-200 text-slate-900 text-sm font-medium rounded-xl hover:border-blue-400 focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 block p-3 transition-all outline-none"
+                        min={INPUT_LIMITS.FEDERAL_TAX_WITHHELD_MIN}
+                        className={`w-full pl-7 bg-slate-50 border text-slate-900 text-sm font-medium rounded-xl hover:border-blue-400 focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 block p-3 transition-all outline-none ${hasFieldError('federalTaxPaid') ? 'border-red-300 bg-red-50' : hasFieldWarning('federalTaxPaid') ? 'border-amber-300 bg-amber-50' : 'border-slate-200'}`}
                         value={formData.federalTaxPaid}
                         onChange={(e) => handleInputChange('federalTaxPaid', parseFloat(e.target.value) || 0)}
                       />
                     </div>
+                    {getFieldErrors('federalTaxPaid').map((err, i) => (
+                      <p key={i} className={`text-xs mt-1 ${err.severity === 'error' ? 'text-red-600' : 'text-amber-600'}`}>
+                        {err.message}
+                      </p>
+                    ))}
                   </InputGroup>
                 </div>
               </div>
@@ -496,7 +587,7 @@ function App() {
                       </div>
                       <span className="text-slate-500 text-sm">Pre-Tax Deductions</span>
                     </div>
-                    <span className="text-rose-600 text-sm">{formatCurrency(formData.preTaxDeductions * (formData.payFrequency === PayFrequency.MONTHLY ? 12 : 1))}</span>
+                    <span className="text-rose-600 text-sm">{formatCurrency(getAnnualAmount(formData.preTaxDeductions, formData.payFrequency))}</span>
                   </div>
 
                   <div className="flex justify-between items-center relative z-10">

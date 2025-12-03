@@ -1,9 +1,84 @@
 
 import { StateTaxInfo, FilingStatus, StateTaxConfig } from './types';
 
-// FICA is generally constant rate, but Wage Base changes per year
-export const FICA_RATE = 0.0765; // 6.2% SS + 1.45% Medicare
+// ============================================
+// FICA TAX CONSTANTS
+// ============================================
+export const FICA_CONSTANTS = {
+  // Social Security (OASDI) - Employee portion
+  SS_EMPLOYEE_RATE: 0.062,
+  
+  // Medicare - Employee portion  
+  MEDICARE_EMPLOYEE_RATE: 0.0145,
+  
+  // Additional Medicare Tax (applies to wages over threshold)
+  ADDITIONAL_MEDICARE_RATE: 0.009,
+  ADDITIONAL_MEDICARE_THRESHOLD: {
+    [FilingStatus.SINGLE]: 200000,
+    [FilingStatus.MARRIED_JOINT]: 250000,
+  },
+  
+  // F-1 Student FICA Exemption
+  F1_EXEMPTION_CALENDAR_YEARS: 5,
+};
 
+// ============================================
+// STATE TAX ESTIMATION CONSTANTS  
+// ============================================
+export const STATE_TAX_CONSTANTS = {
+  // Max income for interpolation estimation (when explicit brackets unavailable)
+  BRACKET_ESTIMATE_SINGLE: 200000,
+  BRACKET_ESTIMATE_MFJ: 400000,
+};
+
+// ============================================
+// PAY PERIOD CONSTANTS
+// ============================================
+export const PAY_PERIOD_CONSTANTS = {
+  MONTHS_PER_YEAR: 12,
+  BIWEEKLY_PERIODS_PER_YEAR: 26,
+  WEEKLY_PERIODS_PER_YEAR: 52,
+};
+
+// ============================================
+// INPUT VALIDATION LIMITS
+// ============================================
+export const INPUT_LIMITS = {
+  GROSS_PAY_MIN: 0,
+  GROSS_PAY_MAX: 10000000,
+  PRE_TAX_DEDUCTIONS_MIN: 0,
+  FEDERAL_TAX_WITHHELD_MIN: 0,
+  YEARS_IN_US_MIN: 0,
+  YEARS_IN_US_MAX: 50,
+  // Warning thresholds
+  YEARS_IN_US_F1_WARNING: 20,
+  TAX_WITHHELD_WARNING_PERCENT: 0.5, // Warn if > 50% of gross
+};
+
+// ============================================
+// DEFAULT FORM VALUES
+// ============================================
+export const DEFAULT_FORM_VALUES = {
+  GROSS_PAY: 85000,
+  PRE_TAX_DEDUCTIONS: 2000,
+  FEDERAL_TAX_PAID: 10000,
+  YEARS_IN_US: 1,
+  TAX_YEAR: 2025,
+  STATE: 'Texas',
+};
+
+// ============================================
+// DISPLAY CONSTANTS
+// ============================================
+export const DISPLAY_CONSTANTS = {
+  THOUSAND: 1000,
+  CURRENCY_DECIMALS: 0,
+  PERCENT_DECIMALS: 2,
+};
+
+// ============================================
+// TAX YEAR DATA (Federal Brackets, Deductions, Limits)
+// ============================================
 export const TAX_DATA = {
   2024: {
     STANDARD_DEDUCTION: {

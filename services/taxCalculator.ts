@@ -1,38 +1,122 @@
 
-import { UserInput, TaxResult, VisaStatus, Country, PayFrequency, BracketDetail } from '../types';
-import { TAX_DATA, STATES_LIST, STATE_GRADUATED_BRACKETS } from '../constants';
+import { UserInput, TaxResult, VisaStatus, Country, PayFrequency, BracketDetail, FICABreakdown, FilingStatus } from '../types';
+import { TAX_DATA, STATES_LIST, STATE_GRADUATED_BRACKETS, FICA_CONSTANTS, STATE_TAX_CONSTANTS, PAY_PERIOD_CONSTANTS } from '../constants';
+
+// ============================================
+// UTILITY FUNCTIONS
+// ============================================
+
+/**
+ * Annualize an amount based on pay frequency
+ */
+export const getAnnualAmount = (amount: number, frequency: PayFrequency): number => {
+  return frequency === PayFrequency.MONTHLY 
+    ? amount * PAY_PERIOD_CONSTANTS.MONTHS_PER_YEAR 
+    : amount;
+};
+
+/**
+ * Get tax year data with fallback to 2025
+ */
+const getTaxYearData = (taxYear: number) => {
+  return TAX_DATA[taxYear as keyof typeof TAX_DATA] || TAX_DATA[2025];
+};
+
+// ============================================
+// FICA CALCULATION (Social Security + Medicare + Additional Medicare)
+// ============================================
+
+/**
+ * Calculate FICA taxes with proper exemptions and Additional Medicare Tax
+ */
+const calculateFICA = (
+  grossPay: number,
+  visaStatus: VisaStatus,
+  yearsInUS: number,
+  filingStatus: FilingStatus,
+  ssWageBase: number
+): FICABreakdown => {
+  // F-1 students are exempt for first 5 calendar years
+  if (visaStatus === VisaStatus.F1 && yearsInUS <= FICA_CONSTANTS.F1_EXEMPTION_CALENDAR_YEARS) {
+    return {
+      socialSecurityTax: 0,
+      medicareTax: 0,
+      additionalMedicareTax: 0,
+      totalFICA: 0,
+      isExempt: true,
+      exemptionReason: `F-1 students are exempt from Social Security & Medicare taxes for their first ${FICA_CONSTANTS.F1_EXEMPTION_CALENDAR_YEARS} calendar years of physical presence in the US.`
+    };
+  }
+
+  // Social Security Tax (6.2%) - capped at wage base
+  const ssTaxableWages = Math.min(grossPay, ssWageBase);
+  const socialSecurityTax = ssTaxableWages * FICA_CONSTANTS.SS_EMPLOYEE_RATE;
+
+  // Medicare Tax (1.45%) - no wage limit
+  const medicareTax = grossPay * FICA_CONSTANTS.MEDICARE_EMPLOYEE_RATE;
+
+  // Additional Medicare Tax (0.9%) - applies to wages OVER threshold
+  const additionalMedicareThreshold = FICA_CONSTANTS.ADDITIONAL_MEDICARE_THRESHOLD[filingStatus];
+  let additionalMedicareTax = 0;
+  
+  if (grossPay > additionalMedicareThreshold) {
+    const wagesOverThreshold = grossPay - additionalMedicareThreshold;
+    additionalMedicareTax = wagesOverThreshold * FICA_CONSTANTS.ADDITIONAL_MEDICARE_RATE;
+  }
+
+  const totalFICA = socialSecurityTax + medicareTax + additionalMedicareTax;
+
+  return {
+    socialSecurityTax,
+    medicareTax,
+    additionalMedicareTax,
+    totalFICA,
+    isExempt: false,
+    exemptionReason: visaStatus === VisaStatus.F1 
+      ? `You have exceeded the ${FICA_CONSTANTS.F1_EXEMPTION_CALENDAR_YEARS}-year FICA exemption period for F-1 students.`
+      : undefined
+  };
+};
+
+// ============================================
+// MAIN TAX CALCULATION
+// ============================================
 
 export const calculateTax = (input: UserInput): TaxResult => {
   const messages: string[] = [];
   
-  // Get Year Specific Data (fallback to 2025 if somehow undefined)
-  const taxYearData = TAX_DATA[input.taxYear as keyof typeof TAX_DATA] || TAX_DATA[2025];
+  // Get Year Specific Data
+  const taxYearData = getTaxYearData(input.taxYear);
   const standardDeductionAmount = taxYearData.STANDARD_DEDUCTION[input.filingStatus];
   const brackets = taxYearData.BRACKETS[input.filingStatus];
 
   // 1. Annualize Income
-  const multiplier = input.payFrequency === PayFrequency.MONTHLY ? 12 : 1;
-  const grossPay = input.grossPay * multiplier;
-  const preTaxDeductions = input.preTaxDeductions * multiplier;
+  const grossPay = getAnnualAmount(input.grossPay, input.payFrequency);
+  const preTaxDeductions = getAnnualAmount(input.preTaxDeductions, input.payFrequency);
   
-  // 2. FICA Calculation
-  // FICA limit (Social Security Wage Base) applies to the 6.2% portion. Medicare (1.45%) has no limit.
-  let ficaTax = 0;
-  if (input.visaStatus === VisaStatus.F1 && input.yearsInUS <= 5) {
-    ficaTax = 0;
-    messages.push("FICA Exempt: F-1 students are exempt from Social Security & Medicare taxes for their first 5 calendar years.");
+  // 2. FICA Calculation (with Additional Medicare Tax)
+  const ficaBreakdown = calculateFICA(
+    grossPay,
+    input.visaStatus,
+    input.yearsInUS,
+    input.filingStatus,
+    taxYearData.SS_WAGE_BASE
+  );
+  
+  const ficaTax = ficaBreakdown.totalFICA;
+  
+  // Add FICA message
+  if (ficaBreakdown.isExempt) {
+    messages.push(`FICA Exempt: ${ficaBreakdown.exemptionReason}`);
   } else {
-    // Social Security (6.2%) capped at wage base
-    const ssTaxable = Math.min(grossPay, taxYearData.SS_WAGE_BASE);
-    const ssTax = ssTaxable * 0.062;
+    let ficaMsg = `FICA Tax: SS ($${Math.round(ficaBreakdown.socialSecurityTax).toLocaleString()}) + Medicare ($${Math.round(ficaBreakdown.medicareTax).toLocaleString()})`;
+    if (ficaBreakdown.additionalMedicareTax > 0) {
+      ficaMsg += ` + Additional Medicare ($${Math.round(ficaBreakdown.additionalMedicareTax).toLocaleString()})`;
+    }
+    messages.push(ficaMsg);
     
-    // Medicare (1.45%) unlimited
-    const medicareTax = grossPay * 0.0145;
-    
-    ficaTax = ssTax + medicareTax;
-    
-    if (input.visaStatus === VisaStatus.F1) {
-      messages.push("FICA Applied: You have exceeded the 5-year exemption period for F-1 students.");
+    if (ficaBreakdown.exemptionReason) {
+      messages.push(ficaBreakdown.exemptionReason);
     }
   }
 
@@ -85,7 +169,7 @@ export const calculateTax = (input: UserInput): TaxResult => {
     previousLimit = bracket.limit;
     
     if (taxableInThisBracket > 0) {
-        marginalTaxRate = bracket.rate;
+      marginalTaxRate = bracket.rate;
     }
   }
 
@@ -110,27 +194,28 @@ export const calculateTax = (input: UserInput): TaxResult => {
       const specificBrackets = STATE_GRADUATED_BRACKETS[stateInfo.name]?.[input.filingStatus];
 
       if (specificBrackets) {
-         let remainingStateIncome = adjustedGrossIncome; // Using AGI as base for state tax approximation
-         let previousStateLimit = 0;
-         stateTax = 0;
+        let remainingStateIncome = adjustedGrossIncome;
+        let previousStateLimit = 0;
+        stateTax = 0;
 
-         for (const bracket of specificBrackets) {
-            if (remainingStateIncome <= 0) break;
+        for (const bracket of specificBrackets) {
+          if (remainingStateIncome <= 0) break;
 
-            const bracketWidth = bracket.limit - previousStateLimit;
-            const taxableInThisBracket = Math.min(remainingStateIncome, bracketWidth);
-            stateTax += taxableInThisBracket * bracket.rate;
+          const bracketWidth = bracket.limit - previousStateLimit;
+          const taxableInThisBracket = Math.min(remainingStateIncome, bracketWidth);
+          stateTax += taxableInThisBracket * bracket.rate;
 
-            remainingStateIncome -= taxableInThisBracket;
-            previousStateLimit = bracket.limit;
-         }
-         // Calculate effective rate for UI display
-         stateRateUsed = adjustedGrossIncome > 0 ? stateTax / adjustedGrossIncome : 0;
-         messages.push(`${stateInfo.name} tax calculated using graduated brackets.`);
+          remainingStateIncome -= taxableInThisBracket;
+          previousStateLimit = bracket.limit;
+        }
+        // Calculate effective rate for UI display
+        stateRateUsed = adjustedGrossIncome > 0 ? stateTax / adjustedGrossIncome : 0;
+        messages.push(`${stateInfo.name} tax calculated using graduated brackets.`);
       } else {
-        // Fallback for graduated states where specific brackets aren't yet mapped in constants
-        // Interpolate between min and max
-        const maxBracketEstimate = input.filingStatus === 'Married Filing Jointly' ? 400000 : 200000;
+        // Fallback for graduated states where specific brackets aren't yet mapped
+        const maxBracketEstimate = input.filingStatus === FilingStatus.MARRIED_JOINT 
+          ? STATE_TAX_CONSTANTS.BRACKET_ESTIMATE_MFJ 
+          : STATE_TAX_CONSTANTS.BRACKET_ESTIMATE_SINGLE;
         const incomeFactor = Math.min(adjustedGrossIncome / maxBracketEstimate, 1);
         
         stateRateUsed = stateInfo.minRate + ((stateInfo.maxRate - stateInfo.minRate) * incomeFactor);
@@ -144,8 +229,8 @@ export const calculateTax = (input: UserInput): TaxResult => {
   const totalTaxLiability = federalTaxLiability + stateTax + ficaTax;
   const takeHomePay = grossPay - totalTaxLiability - preTaxDeductions;
   
-  // Refund / Owe
-  const totalPaid = input.federalTaxPaid * multiplier; 
+  // Refund / Owe (based on federal tax only - state withholding not tracked)
+  const totalPaid = getAnnualAmount(input.federalTaxPaid, input.payFrequency);
   const refundOrOwe = totalPaid - federalTaxLiability;
 
   return {
@@ -156,11 +241,12 @@ export const calculateTax = (input: UserInput): TaxResult => {
     federalTaxLiability,
     federalBreakdown,
     ficaTax,
+    ficaBreakdown,
     stateTax,
     totalTaxLiability,
     takeHomePay,
     refundOrOwe,
-    effectiveTaxRate: totalTaxLiability / grossPay,
+    effectiveTaxRate: grossPay > 0 ? totalTaxLiability / grossPay : 0,
     marginalTaxRate,
     messages,
     stateRateUsed
