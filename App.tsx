@@ -1,6 +1,6 @@
 
 import React, { useState, useMemo, useCallback } from 'react';
-import { Calculator, MapPin, Calendar, Globe, ChevronRight, ChevronDown, AlertCircle, CheckCircle2, Info, ArrowRight, Sparkles, Loader2, Bot, Users, Printer, ShieldCheck, AlertTriangle } from 'lucide-react';
+import { Calculator, MapPin, Calendar, Globe, ChevronRight, ChevronDown, AlertCircle, CheckCircle2, Info, ArrowRight, Sparkles, Loader2, Bot, Users, Printer, ShieldCheck, AlertTriangle, X, Key } from 'lucide-react';
 import { GoogleGenAI, Type } from "@google/genai";
 import { VisaStatus, Country, PayFrequency, UserInput, FilingStatus, ValidationError } from './types';
 import { STATES_LIST, TAX_DATA, DEFAULT_FORM_VALUES, INPUT_LIMITS, PAY_PERIOD_CONSTANTS, FICA_CONSTANTS, WITHHOLDING_DEFAULTS } from './constants';
@@ -48,6 +48,10 @@ function App() {
   const [isVerifying, setIsVerifying] = useState(false);
   const [takeHomePeriod, setTakeHomePeriod] = useState<'yearly' | 'monthly' | 'biweekly'>('yearly');
   const [validationErrors, setValidationErrors] = useState<ValidationError[]>([]);
+  const [showApiKeyModal, setShowApiKeyModal] = useState(false);
+  const [userApiKey, setUserApiKey] = useState('');
+  const [tempApiKeyInput, setTempApiKeyInput] = useState('');
+  const [apiKeyError, setApiKeyError] = useState('');
 
   const handleInputChange = (field: keyof UserInput, value: any) => {
     const newFormData = { ...formData, [field]: value };
@@ -183,9 +187,29 @@ function App() {
     window.print();
   };
 
+  const getActiveApiKey = (): string | null => {
+    // First try user-provided key, then fall back to env key
+    if (userApiKey) return userApiKey;
+    if (process.env.API_KEY) return process.env.API_KEY;
+    return null;
+  };
+
+  const handleApiKeySubmit = () => {
+    if (tempApiKeyInput.trim()) {
+      setUserApiKey(tempApiKeyInput.trim());
+      setShowApiKeyModal(false);
+      setApiKeyError('');
+      // Automatically retry verification after setting the key
+      setTimeout(() => handleVerifyWithGemini(), 100);
+    }
+  };
+
   const handleVerifyWithGemini = async () => {
-    if (!process.env.API_KEY) {
-      alert("API Key is missing from environment variables.");
+    const apiKey = getActiveApiKey();
+    
+    if (!apiKey) {
+      setShowApiKeyModal(true);
+      setApiKeyError('No API key found. Please enter your Gemini API key to continue.');
       return;
     }
 
@@ -193,7 +217,7 @@ function App() {
     setAiAnalysis(null);
 
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      const ai = new GoogleGenAI({ apiKey });
       
       const promptContext = `
         You are a highly accurate US Tax verification engine. 
@@ -272,9 +296,23 @@ function App() {
         const parsed = JSON.parse(response.text) as AiVerificationResponse;
         setAiAnalysis(parsed);
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error("Gemini Error:", error);
-      alert("Verification failed. Please check your API key or try again.");
+      const errorMessage = error?.message || 'Unknown error';
+      const isApiKeyError = errorMessage.toLowerCase().includes('api key') || 
+                           errorMessage.toLowerCase().includes('invalid') ||
+                           errorMessage.toLowerCase().includes('unauthorized') ||
+                           errorMessage.toLowerCase().includes('authentication') ||
+                           error?.status === 401 || 
+                           error?.status === 403;
+      
+      if (isApiKeyError) {
+        setUserApiKey(''); // Clear invalid key
+        setApiKeyError('API key error: ' + errorMessage + '. Please enter a valid Gemini API key.');
+        setShowApiKeyModal(true);
+      } else {
+        alert("Verification failed: " + errorMessage);
+      }
     } finally {
       setIsVerifying(false);
     }
@@ -283,6 +321,99 @@ function App() {
   return (
     <div className="min-h-screen bg-slate-50 font-sans text-slate-900 pb-20">
       
+      {/* API Key Modal */}
+      {showApiKeyModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 overflow-hidden animate-in fade-in zoom-in-95">
+            {/* Modal Header */}
+            <div className="bg-gradient-to-r from-indigo-600 to-purple-600 p-6 text-white">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="bg-white/20 p-2 rounded-lg">
+                    <Key size={24} />
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-bold">Gemini API Key Required</h3>
+                    <p className="text-white/80 text-sm">Enter your API key to use AI verification</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => {
+                    setShowApiKeyModal(false);
+                    setApiKeyError('');
+                    setTempApiKeyInput('');
+                  }}
+                  className="text-white/80 hover:text-white transition-colors p-1 hover:bg-white/10 rounded-lg"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-6 space-y-4">
+              {apiKeyError && (
+                <div className="bg-rose-50 border border-rose-200 text-rose-700 px-4 py-3 rounded-xl text-sm flex items-start gap-2">
+                  <AlertCircle size={18} className="flex-shrink-0 mt-0.5" />
+                  <span>{apiKeyError}</span>
+                </div>
+              )}
+              
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">
+                  Gemini API Key
+                </label>
+                <input
+                  type="password"
+                  value={tempApiKeyInput}
+                  onChange={(e) => setTempApiKeyInput(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleApiKeySubmit()}
+                  placeholder="Enter your Gemini API key..."
+                  className="w-full bg-slate-50 border border-slate-200 text-slate-900 text-sm rounded-xl focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10 p-3 transition-all outline-none"
+                  autoFocus
+                />
+              </div>
+
+              <div className="bg-blue-50 border border-blue-100 rounded-xl p-4 text-sm text-blue-800">
+                <p className="font-medium mb-1">How to get a Gemini API Key:</p>
+                <ol className="list-decimal list-inside space-y-1 text-blue-700">
+                  <li>Visit <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer" className="underline hover:text-blue-900">Google AI Studio</a></li>
+                  <li>Sign in with your Google account</li>
+                  <li>Click "Create API Key"</li>
+                  <li>Copy and paste the key here</li>
+                </ol>
+                <p className="mt-2 text-xs text-blue-600">
+                  <Info size={12} className="inline mr-1" />
+                  Your key is stored temporarily in this session only and is never saved.
+                </p>
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="bg-slate-50 px-6 py-4 flex gap-3 border-t border-slate-200">
+              <button
+                onClick={() => {
+                  setShowApiKeyModal(false);
+                  setApiKeyError('');
+                  setTempApiKeyInput('');
+                }}
+                className="flex-1 px-4 py-2.5 border border-slate-200 text-slate-700 font-medium rounded-xl hover:bg-slate-100 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleApiKeySubmit}
+                disabled={!tempApiKeyInput.trim()}
+                className="flex-1 px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-medium rounded-xl shadow-md hover:shadow-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              >
+                <Key size={16} />
+                Use This Key
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Hero Header */}
       <div className="bg-white border-b border-slate-200 sticky top-0 z-30 print:static print:border-none">
         <div className="max-w-6xl mx-auto px-4 py-4 md:py-6 flex items-center justify-between">
@@ -894,14 +1025,32 @@ function App() {
                {isVerifying ? (
                  <TaxAgentLoader />
                ) : (
-                 <button 
-                  onClick={handleVerifyWithGemini}
-                  disabled={isVerifying}
-                  className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-medium p-4 rounded-xl shadow-md hover:shadow-lg transition-all flex items-center justify-center gap-3 disabled:opacity-70 disabled:cursor-not-allowed group"
-                 >
-                   <Sparkles className="group-hover:text-yellow-300 transition-colors" size={20} />
-                   <span>Double Check with AI Agent</span>
-                 </button>
+                 <>
+                   <button 
+                    onClick={handleVerifyWithGemini}
+                    disabled={isVerifying}
+                    className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-medium p-4 rounded-xl shadow-md hover:shadow-lg transition-all flex items-center justify-center gap-3 disabled:opacity-70 disabled:cursor-not-allowed group"
+                   >
+                     <Sparkles className="group-hover:text-yellow-300 transition-colors" size={20} />
+                     <span>Double Check with AI Agent</span>
+                   </button>
+                   {userApiKey && (
+                     <div className="mt-2 flex items-center justify-center gap-2 text-xs text-indigo-600">
+                       <Key size={12} />
+                       <span>Using your API key</span>
+                       <button 
+                         onClick={() => {
+                           setUserApiKey('');
+                           setAiAnalysis(null);
+                         }}
+                         className="text-slate-400 hover:text-rose-500 ml-1"
+                         title="Remove your API key"
+                       >
+                         <X size={12} />
+                       </button>
+                     </div>
+                   )}
+                 </>
                )}
 
                {aiAnalysis && (
