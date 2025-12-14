@@ -261,6 +261,7 @@ function App() {
         model: 'gemini-2.5-flash-lite',
         contents: promptContext,
         config: {
+          tools: [{ googleSearch: {} }],
           responseMimeType: "application/json",
           responseSchema: {
             type: Type.OBJECT,
