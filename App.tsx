@@ -258,7 +258,7 @@ function App() {
       `;
 
       const response = await ai.models.generateContent({
-        model: 'gemini-2.5-pro',
+        model: 'gemini-2.5-flash-lite',
         contents: promptContext,
         config: {
           responseMimeType: "application/json",
