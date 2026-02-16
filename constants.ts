@@ -23,6 +23,15 @@ export const FICA_CONSTANTS = {
 };
 
 // ============================================
+// CAPITAL GAINS TAX CONSTANTS
+// ============================================
+export const CAPITAL_GAINS_CONSTANTS = {
+  // Flat tax rate for nonresident aliens on U.S. source capital gains
+  // when present in the U.S. for 183 days or more during the taxable year
+  NRA_CAPITAL_GAINS_RATE: 0.30,
+};
+
+// ============================================
 // STATE TAX ESTIMATION CONSTANTS  
 // ============================================
 export const STATE_TAX_CONSTANTS = {
@@ -67,6 +76,9 @@ export const DEFAULT_FORM_VALUES = {
   YEARS_IN_US: 1,
   TAX_YEAR: 2025,
   STATE: 'Texas',
+  HAS_STOCK_INCOME: false,
+  STOCK_PROCEEDS: 0,
+  STOCK_COST_BASIS: 0,
 };
 
 // ============================================

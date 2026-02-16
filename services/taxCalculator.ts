@@ -1,6 +1,6 @@
 
 import { UserInput, TaxResult, VisaStatus, Country, PayFrequency, BracketDetail, FICABreakdown, FilingStatus } from '../types';
-import { TAX_DATA, STATES_LIST, STATE_GRADUATED_BRACKETS, FICA_CONSTANTS, STATE_TAX_CONSTANTS, PAY_PERIOD_CONSTANTS } from '../constants';
+import { TAX_DATA, STATES_LIST, STATE_GRADUATED_BRACKETS, FICA_CONSTANTS, STATE_TAX_CONSTANTS, PAY_PERIOD_CONSTANTS, CAPITAL_GAINS_CONSTANTS } from '../constants';
 
 // ============================================
 // UTILITY FUNCTIONS
@@ -125,15 +125,23 @@ export const calculateTax = (input: UserInput): TaxResult => {
 
   // 4. Standard Deduction
   let standardDeduction = 0;
-  if (input.visaStatus === VisaStatus.H1B) {
-    standardDeduction = standardDeductionAmount;
-    messages.push(`Standard Deduction (${input.taxYear}): H-1B holders are typically Resident Aliens.`);
-  } else if (input.visaStatus === VisaStatus.F1 && input.country === Country.INDIA) {
-    standardDeduction = standardDeductionAmount;
-    messages.push("Treaty Benefit: The US-India Tax Treaty (Article 21) allows Standard Deduction.");
+  
+  // Check if user has overridden the standard deduction
+  if (input.standardDeductionOverride !== undefined && input.standardDeductionOverride !== null) {
+    standardDeduction = input.standardDeductionOverride;
+    messages.push(`Custom Standard Deduction: $${standardDeduction.toLocaleString()}`);
   } else {
-    standardDeduction = 0;
-    messages.push("No Standard Deduction: Most Non-Resident Aliens (F-1) cannot claim this.");
+    // Use default logic
+    if (input.visaStatus === VisaStatus.H1B) {
+      standardDeduction = standardDeductionAmount;
+      messages.push(`Standard Deduction (${input.taxYear}): H-1B holders are typically Resident Aliens.`);
+    } else if (input.visaStatus === VisaStatus.F1 && input.country === Country.INDIA) {
+      standardDeduction = standardDeductionAmount;
+      messages.push("Treaty Benefit: The US-India Tax Treaty (Article 21) allows Standard Deduction.");
+    } else {
+      standardDeduction = 0;
+      messages.push("No Standard Deduction: Most Non-Resident Aliens (F-1) cannot claim this.");
+    }
   }
 
   // 5. Taxable Income
@@ -225,8 +233,25 @@ export const calculateTax = (input: UserInput): TaxResult => {
     }
   }
 
-  // 8. Totals
-  const totalTaxLiability = federalTaxLiability + stateTax + ficaTax;
+  // 8. Capital Gains Tax (for stock income)
+  let capitalGains: number | undefined = undefined;
+  let capitalGainsTax: number | undefined = undefined;
+  
+  if (input.hasStockIncome && input.stockProceeds && input.stockCostBasis !== undefined) {
+    capitalGains = input.stockProceeds - input.stockCostBasis;
+    
+    // Only apply tax if there are gains (not on losses)
+    if (capitalGains > 0) {
+      capitalGainsTax = capitalGains * CAPITAL_GAINS_CONSTANTS.NRA_CAPITAL_GAINS_RATE;
+      messages.push(`Capital Gains Tax: For F-1 students, U.S. source capital gains are typically taxed at 30% flat rate.`);
+    } else {
+      capitalGainsTax = 0;
+      messages.push(`Capital Loss: $${Math.abs(capitalGains).toLocaleString()} - No tax on capital losses.`);
+    }
+  }
+
+  // 9. Totals
+  const totalTaxLiability = federalTaxLiability + stateTax + ficaTax + (capitalGainsTax || 0);
   const takeHomePay = grossPay - totalTaxLiability - preTaxDeductions;
   
   // Refund / Owe calculations for each tax type
@@ -237,7 +262,12 @@ export const calculateTax = (input: UserInput): TaxResult => {
   const refundOrOwe = federalPaid - federalTaxLiability;
   const ficaRefundOrOwe = ficaPaid - ficaTax;
   const stateRefundOrOwe = statePaid - stateTax;
-  const totalRefundOrOwe = refundOrOwe + ficaRefundOrOwe + stateRefundOrOwe;
+  
+  // Capital gains tax is typically not withheld, so it's usually owed
+  const capitalGainsRefundOrOwe = capitalGainsTax !== undefined ? (0 - capitalGainsTax) : undefined;
+  
+  // Total refund/owe includes capital gains tax owed
+  const totalRefundOrOwe = refundOrOwe + ficaRefundOrOwe + stateRefundOrOwe + (capitalGainsRefundOrOwe || 0);
 
   return {
     grossPay,
@@ -249,11 +279,14 @@ export const calculateTax = (input: UserInput): TaxResult => {
     ficaTax,
     ficaBreakdown,
     stateTax,
+    capitalGains,
+    capitalGainsTax,
     totalTaxLiability,
     takeHomePay,
     refundOrOwe,
     ficaRefundOrOwe,
     stateRefundOrOwe,
+    capitalGainsRefundOrOwe,
     totalRefundOrOwe,
     effectiveTaxRate: grossPay > 0 ? totalTaxLiability / grossPay : 0,
     marginalTaxRate,

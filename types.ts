@@ -33,6 +33,10 @@ export interface UserInput {
   stateTaxWithheld: number;
   filingStatus: FilingStatus;
   taxYear: number;
+  standardDeductionOverride?: number;
+  hasStockIncome: boolean;
+  stockProceeds?: number;
+  stockCostBasis?: number;
 }
 
 export interface BracketDetail {
@@ -63,11 +67,14 @@ export interface TaxResult {
   ficaTax: number;
   ficaBreakdown: FICABreakdown;
   stateTax: number;
+  capitalGains?: number;
+  capitalGainsTax?: number;
   totalTaxLiability: number;
   takeHomePay: number;
   refundOrOwe: number;
   ficaRefundOrOwe: number;
   stateRefundOrOwe: number;
+  capitalGainsRefundOrOwe?: number;
   totalRefundOrOwe: number;
   effectiveTaxRate: number;
   marginalTaxRate: number;

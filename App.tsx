@@ -40,7 +40,10 @@ function App() {
     ficaWithheld: DEFAULT_FORM_VALUES.FICA_WITHHELD,
     stateTaxWithheld: DEFAULT_FORM_VALUES.STATE_TAX_WITHHELD,
     filingStatus: FilingStatus.SINGLE,
-    taxYear: DEFAULT_FORM_VALUES.TAX_YEAR
+    taxYear: DEFAULT_FORM_VALUES.TAX_YEAR,
+    hasStockIncome: DEFAULT_FORM_VALUES.HAS_STOCK_INCOME,
+    stockProceeds: DEFAULT_FORM_VALUES.STOCK_PROCEEDS,
+    stockCostBasis: DEFAULT_FORM_VALUES.STOCK_COST_BASIS,
   });
 
   const [isBreakdownExpanded, setIsBreakdownExpanded] = useState(false);
@@ -85,7 +88,11 @@ function App() {
     formData.ficaWithheld,
     formData.stateTaxWithheld,
     formData.filingStatus,
-    formData.taxYear
+    formData.taxYear,
+    formData.standardDeductionOverride,
+    formData.hasStockIncome,
+    formData.stockProceeds,
+    formData.stockCostBasis
   ]);
 
   const currentStateInfo = useMemo(() => 
@@ -248,9 +255,11 @@ function App() {
         - Federal Tax Liability: ${results.federalTaxLiability}
         - FICA Tax Liability: ${results.ficaTax}
         - State Tax Liability: ${results.stateTax}
+        ${results.capitalGainsTax ? `- Capital Gains Tax Liability: ${results.capitalGainsTax}` : ''}
         - Federal Refund/Owe: ${results.refundOrOwe} (positive = refund)
         - FICA Refund/Owe: ${results.ficaRefundOrOwe} (positive = refund)
         - State Refund/Owe: ${results.stateRefundOrOwe} (positive = refund)
+        ${results.capitalGainsRefundOrOwe !== undefined ? `- Capital Gains Refund/Owe: ${results.capitalGainsRefundOrOwe} (positive = refund)` : ''}
         - Total Refund/Owe: ${results.totalRefundOrOwe} (positive = refund)
         
         Output Requirement:
@@ -739,6 +748,112 @@ function App() {
                       </button>
                     </div>
                   </InputGroup>
+
+                  {/* Standard Deduction Override */}
+                  <InputGroup label="Standard Deduction (Optional Override)" tooltip="Override the auto-calculated standard deduction amount. Leave blank to use automatic calculation based on visa status and treaty.">
+                    <div className="relative">
+                      <div className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
+                        <span className="text-slate-400 font-bold">$</span>
+                      </div>
+                      <input 
+                        type="number" 
+                        min={0}
+                        placeholder={`Auto: ${formatCurrency(results.standardDeduction)}`}
+                        className="w-full pl-7 bg-slate-50 border border-slate-200 text-slate-900 text-sm font-medium rounded-xl hover:border-blue-400 focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 block p-3 transition-all outline-none"
+                        value={formData.standardDeductionOverride ?? ''}
+                        onChange={(e) => handleInputChange('standardDeductionOverride', e.target.value === '' ? undefined : parseFloat(e.target.value) || 0)}
+                      />
+                    </div>
+                    <p className="text-xs text-slate-500 mt-1">
+                      Current auto value: {formatCurrency(results.standardDeduction)}
+                    </p>
+                  </InputGroup>
+                </div>
+              </div>
+            </div>
+
+            {/* Stock Income Section */}
+            <div className="bg-white rounded-2xl shadow-sm border border-slate-200">
+              <div className="p-6">
+                <div className="flex justify-between items-center mb-6">
+                  <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2">
+                    <span className="w-1 h-6 bg-purple-500 rounded-full"></span>
+                    Stock Income (Capital Gains)
+                  </h2>
+                </div>
+
+                <div className="space-y-5">
+                  {/* Checkbox for stock income */}
+                  <div className="flex items-start gap-3">
+                    <input 
+                      type="checkbox"
+                      id="hasStockIncome"
+                      checked={formData.hasStockIncome}
+                      onChange={(e) => handleInputChange('hasStockIncome', e.target.checked)}
+                      className="mt-1 w-4 h-4 text-purple-600 bg-slate-50 border-slate-200 rounded focus:ring-4 focus:ring-purple-500/10 transition-all"
+                    />
+                    <div className="flex-1">
+                      <label htmlFor="hasStockIncome" className="text-sm font-medium text-slate-700 cursor-pointer flex items-center gap-2">
+                        I have stock income (capital gains/loss)
+                        <Tooltip text="A flat tax of 30 percent (or lower treaty) rate is imposed on U.S. source capital gains in the hands of nonresident individuals present in the United States for 183 days or more during the taxable year. This 183-day rule bears no relation to the 183-day rule under the substantial presence test of IRC section 7701(b)(3). This rule applies even if any of the transactions occurred while you were not in the United States." />
+                      </label>
+                      <p className="text-xs text-slate-500 mt-1">
+                        F-1 students are typically taxed at 30% flat rate on capital gains
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Conditional inputs for stock proceeds and cost basis */}
+                  {formData.hasStockIncome && (
+                    <div className="space-y-5 ml-7 pl-4 border-l-2 border-purple-100">
+                      <InputGroup label="Total Proceeds (Sale Amount)" tooltip="The total amount you received from selling stocks">
+                        <div className="relative">
+                          <div className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
+                            <span className="text-slate-400 font-bold">$</span>
+                          </div>
+                          <input 
+                            type="number" 
+                            min={0}
+                            className="w-full pl-7 bg-slate-50 border border-slate-200 text-slate-900 text-sm font-medium rounded-xl hover:border-purple-400 focus:border-purple-500 focus:ring-4 focus:ring-purple-500/10 block p-3 transition-all outline-none"
+                            value={formData.stockProceeds ?? 0}
+                            onChange={(e) => handleInputChange('stockProceeds', parseFloat(e.target.value) || 0)}
+                          />
+                        </div>
+                      </InputGroup>
+
+                      <InputGroup label="Cost Basis (Purchase Amount)" tooltip="The total amount you paid for the stocks (including fees)">
+                        <div className="relative">
+                          <div className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
+                            <span className="text-slate-400 font-bold">$</span>
+                          </div>
+                          <input 
+                            type="number" 
+                            min={0}
+                            className="w-full pl-7 bg-slate-50 border border-slate-200 text-slate-900 text-sm font-medium rounded-xl hover:border-purple-400 focus:border-purple-500 focus:ring-4 focus:ring-purple-500/10 block p-3 transition-all outline-none"
+                            value={formData.stockCostBasis ?? 0}
+                            onChange={(e) => handleInputChange('stockCostBasis', parseFloat(e.target.value) || 0)}
+                          />
+                        </div>
+                      </InputGroup>
+
+                      {/* Show calculated gains/loss */}
+                      {results.capitalGains !== undefined && (
+                        <div className={`rounded-xl p-4 border ${results.capitalGains > 0 ? 'bg-amber-50/50 border-amber-100' : 'bg-blue-50/50 border-blue-100'}`}>
+                          <p className="text-sm font-medium text-slate-700">
+                            {results.capitalGains > 0 ? 'Capital Gains: ' : 'Capital Loss: '}
+                            <span className={results.capitalGains > 0 ? 'text-amber-700' : 'text-blue-700'}>
+                              {formatCurrency(Math.abs(results.capitalGains))}
+                            </span>
+                          </p>
+                          {results.capitalGains > 0 && results.capitalGainsTax !== undefined && (
+                            <p className="text-xs text-slate-600 mt-1">
+                              Tax at 30%: {formatCurrency(results.capitalGainsTax)}
+                            </p>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
@@ -867,6 +982,20 @@ function App() {
                     <span className="text-slate-900 font-semibold">{formatCurrency(results.stateTax)}</span>
                   </div>
 
+                  {/* Capital Gains Tax (if applicable) */}
+                  {results.capitalGainsTax !== undefined && results.capitalGainsTax > 0 && (
+                    <div className="flex justify-between items-center group">
+                      <div className="flex items-center gap-2">
+                        <div className="w-2 h-2 rounded-full bg-purple-500"></div>
+                        <div className="flex items-center">
+                          <span className="text-slate-600 text-sm">Capital Gains Tax</span>
+                          <Tooltip text="A flat tax of 30% is imposed on U.S. source capital gains for nonresident individuals present in the U.S. for 183 days or more during the taxable year." />
+                        </div>
+                      </div>
+                      <span className="text-slate-900 font-semibold">{formatCurrency(results.capitalGainsTax)}</span>
+                    </div>
+                  )}
+
                   <div className="flex justify-between items-center group">
                     <div className="flex items-center gap-2">
                       <div className="w-2 h-2 rounded-full bg-slate-300"></div>
@@ -989,7 +1118,7 @@ function App() {
                </div>
                
                {/* Breakdown by tax type */}
-               <div className={`px-6 pb-6 grid grid-cols-3 gap-4 ${results.totalRefundOrOwe >= 0 ? 'bg-emerald-600' : 'bg-white border-t border-slate-100'}`}>
+               <div className={`px-6 pb-6 grid gap-4 ${results.capitalGainsRefundOrOwe !== undefined ? 'grid-cols-2 sm:grid-cols-4' : 'grid-cols-3'} ${results.totalRefundOrOwe >= 0 ? 'bg-emerald-600' : 'bg-white border-t border-slate-100'}`}>
                  <div className={`text-center p-3 rounded-lg ${results.totalRefundOrOwe >= 0 ? 'bg-emerald-500/50' : 'bg-slate-50'}`}>
                    <p className={`text-xs font-medium mb-1 ${results.totalRefundOrOwe >= 0 ? 'text-emerald-100' : 'text-slate-500'}`}>Federal</p>
                    <p className={`text-lg font-bold ${results.refundOrOwe >= 0 ? (results.totalRefundOrOwe >= 0 ? 'text-white' : 'text-emerald-600') : 'text-rose-600'}`}>
@@ -1017,6 +1146,17 @@ function App() {
                      {results.stateTax === 0 ? '✓ No State Tax' : (results.stateRefundOrOwe >= 0 ? '↑ Refund' : '↓ Owe')}
                    </p>
                  </div>
+                 {results.capitalGainsRefundOrOwe !== undefined && (
+                   <div className={`text-center p-3 rounded-lg ${results.totalRefundOrOwe >= 0 ? 'bg-emerald-500/50' : 'bg-slate-50'}`}>
+                     <p className={`text-xs font-medium mb-1 ${results.totalRefundOrOwe >= 0 ? 'text-emerald-100' : 'text-slate-500'}`}>Capital Gains</p>
+                     <p className={`text-lg font-bold ${results.capitalGainsRefundOrOwe >= 0 ? (results.totalRefundOrOwe >= 0 ? 'text-white' : 'text-emerald-600') : 'text-rose-600'}`}>
+                       {formatCurrency(Math.abs(results.capitalGainsRefundOrOwe))}
+                     </p>
+                     <p className={`text-[10px] font-medium mt-0.5 ${results.totalRefundOrOwe >= 0 ? 'text-emerald-200' : (results.capitalGainsRefundOrOwe >= 0 ? 'text-emerald-500' : 'text-rose-500')}`}>
+                       {results.capitalGainsRefundOrOwe >= 0 ? '↑ Refund' : '↓ Owe'}
+                     </p>
+                   </div>
+                 )}
                </div>
             </div>
             
