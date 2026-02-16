@@ -21,7 +21,8 @@ export const serializeShareState = (input: UserInput): string => {
   params.set('state', input.state);
   params.set('hasMultiStateIncome', input.hasMultiStateIncome ? '1' : '0');
   if (input.secondState) params.set('secondState', input.secondState);
-  if (input.secondStateIncomeShare !== undefined) params.set('secondStateIncomeShare', String(input.secondStateIncomeShare));
+  if (input.primaryStateIncome !== undefined) params.set('primaryStateIncome', String(input.primaryStateIncome));
+  if (input.secondStateIncome !== undefined) params.set('secondStateIncome', String(input.secondStateIncome));
   params.set('payFrequency', input.payFrequency);
   params.set('grossPay', String(input.grossPay));
   params.set('preTaxDeductions', String(input.preTaxDeductions));
@@ -75,11 +76,26 @@ export const parseShareState = (search: string): Partial<UserInput> => {
   const yearsInUS = toNumber(params.get('yearsInUS'));
   if (yearsInUS !== undefined) parsed.yearsInUS = yearsInUS;
 
-  const secondStateIncomeShare = toNumber(params.get('secondStateIncomeShare'));
-  if (secondStateIncomeShare !== undefined) parsed.secondStateIncomeShare = secondStateIncomeShare;
-
   const grossPay = toNumber(params.get('grossPay'));
   if (grossPay !== undefined) parsed.grossPay = grossPay;
+
+  const primaryStateIncome = toNumber(params.get('primaryStateIncome'));
+  if (primaryStateIncome !== undefined) parsed.primaryStateIncome = primaryStateIncome;
+
+  const secondStateIncome = toNumber(params.get('secondStateIncome'));
+  if (secondStateIncome !== undefined) parsed.secondStateIncome = secondStateIncome;
+
+  // Backward compatibility: old shared links used secondStateIncomeShare (% split).
+  const legacySecondStateIncomeShare = toNumber(params.get('secondStateIncomeShare'));
+  if (legacySecondStateIncomeShare !== undefined && grossPay !== undefined) {
+    const clampedShare = Math.min(Math.max(legacySecondStateIncomeShare, 1), 99) / 100;
+    if (parsed.primaryStateIncome === undefined) {
+      parsed.primaryStateIncome = Math.max(0, grossPay * (1 - clampedShare));
+    }
+    if (parsed.secondStateIncome === undefined) {
+      parsed.secondStateIncome = Math.max(0, grossPay * clampedShare);
+    }
+  }
 
   const preTaxDeductions = toNumber(params.get('preTaxDeductions'));
   if (preTaxDeductions !== undefined) parsed.preTaxDeductions = preTaxDeductions;

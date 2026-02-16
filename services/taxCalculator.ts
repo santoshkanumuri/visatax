@@ -246,24 +246,42 @@ export const calculateTax = (input: UserInput): TaxResult => {
   let stateRateUsed = 0;
 
   if (input.hasMultiStateIncome && input.secondState && input.secondState !== input.state) {
-    const secondStateShare = Math.min(Math.max(input.secondStateIncomeShare || 50, 1), 99) / 100;
-    const primaryStateShare = 1 - secondStateShare;
-    const primaryIncome = adjustedGrossIncome * primaryStateShare;
-    const secondIncome = adjustedGrossIncome * secondStateShare;
+    const primaryStateIncome = Math.max(0, getAnnualAmount(input.primaryStateIncome || 0, input.payFrequency));
+    const secondStateIncome = Math.max(0, getAnnualAmount(input.secondStateIncome || 0, input.payFrequency));
+    const combinedStateIncome = primaryStateIncome + secondStateIncome;
 
-    const primaryStateCalc = calculateStateTaxForIncome(input.state, primaryIncome, input.filingStatus);
-    const secondStateCalc = calculateStateTaxForIncome(input.secondState, secondIncome, input.filingStatus);
+    if (combinedStateIncome > 0) {
+      // Allocate pre-tax deductions in proportion to each state's income.
+      const primaryDeductionShare = preTaxDeductions * (primaryStateIncome / combinedStateIncome);
+      const secondDeductionShare = preTaxDeductions - primaryDeductionShare;
 
-    stateTax = primaryStateCalc.tax + secondStateCalc.tax;
-    stateRateUsed = adjustedGrossIncome > 0 ? stateTax / adjustedGrossIncome : 0;
+      const primaryAdjustedIncome = Math.max(0, primaryStateIncome - primaryDeductionShare);
+      const secondAdjustedIncome = Math.max(0, secondStateIncome - secondDeductionShare);
 
-    messages.push(
-      `Multi-state estimate: ${Math.round(primaryStateShare * 100)}% income in ${input.state}, ${Math.round(
-        secondStateShare * 100
-      )}% in ${input.secondState}.`
-    );
-    messages.push(primaryStateCalc.message);
-    messages.push(secondStateCalc.message);
+      const primaryStateCalc = calculateStateTaxForIncome(input.state, primaryAdjustedIncome, input.filingStatus);
+      const secondStateCalc = calculateStateTaxForIncome(input.secondState, secondAdjustedIncome, input.filingStatus);
+
+      stateTax = primaryStateCalc.tax + secondStateCalc.tax;
+      stateRateUsed = adjustedGrossIncome > 0 ? stateTax / adjustedGrossIncome : 0;
+
+      messages.push(
+        `Multi-state estimate: ${input.state} income $${Math.round(primaryStateIncome).toLocaleString()}, ${input.secondState} income $${Math.round(secondStateIncome).toLocaleString()}.`
+      );
+      messages.push(primaryStateCalc.message);
+      messages.push(secondStateCalc.message);
+
+      if (Math.abs(combinedStateIncome - grossPay) > Math.max(1000, grossPay * 0.1)) {
+        messages.push(
+          'Multi-state note: Total of entered state incomes differs from gross pay by more than 10%, so state tax may be less precise.'
+        );
+      }
+    } else {
+      const fallbackStateCalc = calculateStateTaxForIncome(input.state, adjustedGrossIncome, input.filingStatus);
+      stateTax = fallbackStateCalc.tax;
+      stateRateUsed = fallbackStateCalc.effectiveRate;
+      messages.push('Multi-state income was enabled, but state income amounts were not provided. Falling back to primary state estimate.');
+      messages.push(fallbackStateCalc.message);
+    }
   } else {
     const singleStateCalc = calculateStateTaxForIncome(input.state, adjustedGrossIncome, input.filingStatus);
     stateTax = singleStateCalc.tax;

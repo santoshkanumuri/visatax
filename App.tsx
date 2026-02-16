@@ -50,7 +50,8 @@ const createDefaultFormData = (): UserInput => ({
   state: DEFAULT_FORM_VALUES.STATE,
   hasMultiStateIncome: DEFAULT_FORM_VALUES.HAS_MULTI_STATE_INCOME,
   secondState: DEFAULT_FORM_VALUES.SECOND_STATE,
-  secondStateIncomeShare: DEFAULT_FORM_VALUES.SECOND_STATE_INCOME_SHARE,
+  primaryStateIncome: DEFAULT_FORM_VALUES.PRIMARY_STATE_INCOME,
+  secondStateIncome: DEFAULT_FORM_VALUES.SECOND_STATE_INCOME,
   payFrequency: PayFrequency.YEARLY,
   grossPay: DEFAULT_FORM_VALUES.GROSS_PAY,
   preTaxDeductions: DEFAULT_FORM_VALUES.PRE_TAX_DEDUCTIONS,
@@ -98,10 +99,14 @@ const hydrateUserInput = (raw: unknown): UserInput => {
   const standardDeductionOverride = parseOptionalNumber(candidate.standardDeductionOverride);
   const stockProceeds = parseOptionalNumber(candidate.stockProceeds);
   const stockCostBasis = parseOptionalNumber(candidate.stockCostBasis);
-  const secondStateIncomeShare = parseOptionalNumber(candidate.secondStateIncomeShare);
+  const primaryStateIncome = parseOptionalNumber(candidate.primaryStateIncome);
+  const secondStateIncome = parseOptionalNumber(candidate.secondStateIncome);
+  // Backward-compat migration from old percentage split model
+  const legacySecondStateIncomeShare = parseOptionalNumber((candidate as any).secondStateIncomeShare);
   const parsedTaxYear = parseNumber(candidate.taxYear, defaults.taxYear);
   const resolvedVisaStatus = isEnumValue(VisaStatus, candidate.visaStatus) ? candidate.visaStatus : defaults.visaStatus;
   const resolvedF1WorkType = isEnumValue(F1WorkType, candidate.f1WorkType) ? candidate.f1WorkType : defaults.f1WorkType;
+  const resolvedGrossPay = Math.max(INPUT_LIMITS.GROSS_PAY_MIN, parseNumber(candidate.grossPay, defaults.grossPay));
 
   return {
     ...defaults,
@@ -119,12 +124,20 @@ const hydrateUserInput = (raw: unknown): UserInput => {
       typeof candidate.secondState === 'string' && validStates.has(candidate.secondState)
         ? candidate.secondState
         : defaults.secondState,
-    secondStateIncomeShare:
-      secondStateIncomeShare !== undefined
-        ? clamp(secondStateIncomeShare, 1, 99)
-        : defaults.secondStateIncomeShare,
+    primaryStateIncome:
+      primaryStateIncome !== undefined
+        ? Math.max(0, primaryStateIncome)
+        : legacySecondStateIncomeShare !== undefined
+        ? Math.max(0, resolvedGrossPay * (1 - clamp(legacySecondStateIncomeShare, 1, 99) / 100))
+        : defaults.primaryStateIncome,
+    secondStateIncome:
+      secondStateIncome !== undefined
+        ? Math.max(0, secondStateIncome)
+        : legacySecondStateIncomeShare !== undefined
+        ? Math.max(0, resolvedGrossPay * (clamp(legacySecondStateIncomeShare, 1, 99) / 100))
+        : defaults.secondStateIncome,
     payFrequency: isEnumValue(PayFrequency, candidate.payFrequency) ? candidate.payFrequency : defaults.payFrequency,
-    grossPay: Math.max(INPUT_LIMITS.GROSS_PAY_MIN, parseNumber(candidate.grossPay, defaults.grossPay)),
+    grossPay: resolvedGrossPay,
     preTaxDeductions: Math.max(
       INPUT_LIMITS.PRE_TAX_DEDUCTIONS_MIN,
       parseNumber(candidate.preTaxDeductions, defaults.preTaxDeductions)
@@ -260,7 +273,8 @@ function App() {
     formData.state,
     formData.hasMultiStateIncome,
     formData.secondState,
-    formData.secondStateIncomeShare,
+    formData.primaryStateIncome,
+    formData.secondStateIncome,
     formData.payFrequency,
     formData.grossPay,
     formData.preTaxDeductions,
@@ -413,6 +427,27 @@ function App() {
         }
         if (value > INPUT_LIMITS.YEARS_IN_US_F1_WARNING && currentFormData.visaStatus === VisaStatus.F1) {
           errors.push({ field, message: 'After 20+ years, you may have different tax status', severity: 'warning' });
+        }
+        break;
+
+      case 'primaryStateIncome':
+      case 'secondStateIncome':
+        if (value < 0) {
+          errors.push({ field, message: 'State income cannot be negative', severity: 'error' });
+        }
+        if (currentFormData.hasMultiStateIncome) {
+          const primaryIncome = getAnnualAmount(currentFormData.primaryStateIncome || 0, currentFormData.payFrequency);
+          const secondaryIncome = getAnnualAmount(currentFormData.secondStateIncome || 0, currentFormData.payFrequency);
+          const stateIncomeTotal = primaryIncome + secondaryIncome;
+          if (stateIncomeTotal <= 0) {
+            errors.push({ field, message: 'Enter income for each selected state', severity: 'error' });
+          } else if (Math.abs(stateIncomeTotal - annualGross) > Math.max(1000, annualGross * 0.1)) {
+            errors.push({
+              field,
+              message: 'Total of state incomes differs from gross pay by more than 10%',
+              severity: 'warning'
+            });
+          }
         }
         break;
     }
@@ -1022,25 +1057,54 @@ function App() {
                         </InputGroup>
 
                         <InputGroup
-                          label={`Income Split To ${formData.secondState} (%)`}
-                          tooltip="Set what percent of your annual income belongs to the second state. Remaining income stays in your primary state."
+                          label={`Income In ${formData.state}`}
+                          tooltip="Enter the income amount for your primary state. Use the same frequency you selected above (yearly/monthly/biweekly)."
                         >
-                          <div>
-                            <input
-                              type="range"
-                              min={1}
-                              max={99}
-                              step={1}
-                              value={formData.secondStateIncomeShare || 50}
-                              onChange={(e) => handleInputChange('secondStateIncomeShare', parseInt(e.target.value, 10))}
-                              className="w-full accent-blue-600"
-                            />
-                            <div className="flex justify-between text-xs text-slate-500 mt-1">
-                              <span>{100 - (formData.secondStateIncomeShare || 50)}% in {formData.state}</span>
-                              <span>{formData.secondStateIncomeShare || 50}% in {formData.secondState}</span>
+                          <div className="relative">
+                            <div className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
+                              <span className="text-slate-400 font-bold">$</span>
                             </div>
+                            <input
+                              type="number"
+                              min={0}
+                              className={`w-full pl-7 bg-white border text-slate-900 text-sm font-medium rounded-xl hover:border-blue-400 focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 block p-3 transition-all outline-none ${hasFieldError('primaryStateIncome') ? 'border-red-300 bg-red-50' : hasFieldWarning('primaryStateIncome') ? 'border-amber-300 bg-amber-50' : 'border-slate-200'}`}
+                              value={formData.primaryStateIncome ?? 0}
+                              onChange={(e) => handleInputChange('primaryStateIncome', parseFloat(e.target.value) || 0)}
+                            />
                           </div>
+                          {getFieldErrors('primaryStateIncome').map((err, i) => (
+                            <p key={i} className={`text-xs mt-1 ${err.severity === 'error' ? 'text-red-600' : 'text-amber-600'}`}>
+                              {err.message}
+                            </p>
+                          ))}
                         </InputGroup>
+
+                        <InputGroup
+                          label={`Income In ${formData.secondState}`}
+                          tooltip="Enter the income amount for the second state. Use the same frequency you selected above (yearly/monthly/biweekly)."
+                        >
+                          <div className="relative">
+                            <div className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
+                              <span className="text-slate-400 font-bold">$</span>
+                            </div>
+                            <input
+                              type="number"
+                              min={0}
+                              className={`w-full pl-7 bg-white border text-slate-900 text-sm font-medium rounded-xl hover:border-blue-400 focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 block p-3 transition-all outline-none ${hasFieldError('secondStateIncome') ? 'border-red-300 bg-red-50' : hasFieldWarning('secondStateIncome') ? 'border-amber-300 bg-amber-50' : 'border-slate-200'}`}
+                              value={formData.secondStateIncome ?? 0}
+                              onChange={(e) => handleInputChange('secondStateIncome', parseFloat(e.target.value) || 0)}
+                            />
+                          </div>
+                          {getFieldErrors('secondStateIncome').map((err, i) => (
+                            <p key={i} className={`text-xs mt-1 ${err.severity === 'error' ? 'text-red-600' : 'text-amber-600'}`}>
+                              {err.message}
+                            </p>
+                          ))}
+                        </InputGroup>
+
+                        <p className="text-xs text-slate-500">
+                          Tip: Keep total state incomes close to your gross pay for best estimate consistency.
+                        </p>
                       </div>
                     )}
                   </div>

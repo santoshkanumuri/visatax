@@ -9,7 +9,8 @@ const sampleInput: UserInput = {
   state: 'California',
   hasMultiStateIncome: true,
   secondState: 'Texas',
-  secondStateIncomeShare: 40,
+  primaryStateIncome: 1800,
+  secondStateIncome: 1200,
   payFrequency: PayFrequency.BIWEEKLY,
   grossPay: 3000,
   preTaxDeductions: 100,
@@ -34,7 +35,17 @@ describe('share state serialization', () => {
     expect(parsed.payFrequency).toBe(sampleInput.payFrequency);
     expect(parsed.hasMultiStateIncome).toBe(true);
     expect(parsed.secondState).toBe('Texas');
-    expect(parsed.secondStateIncomeShare).toBe(40);
+    expect(parsed.primaryStateIncome).toBe(1800);
+    expect(parsed.secondStateIncome).toBe(1200);
+  });
+
+  test('legacy percentage links are migrated to explicit state incomes', () => {
+    const parsed = parseShareState(
+      '?grossPay=3000&secondStateIncomeShare=40&hasMultiStateIncome=1&state=California&secondState=Texas'
+    );
+
+    expect(parsed.primaryStateIncome).toBe(1800);
+    expect(parsed.secondStateIncome).toBe(1200);
   });
 
   test('buildShareUrl returns empty string in non-browser runtime', () => {

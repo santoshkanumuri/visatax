@@ -36,7 +36,8 @@ export interface UserInput {
   state: string;
   hasMultiStateIncome: boolean;
   secondState?: string;
-  secondStateIncomeShare?: number;
+  primaryStateIncome?: number;
+  secondStateIncome?: number;
   payFrequency: PayFrequency;
   grossPay: number;
   preTaxDeductions: number;

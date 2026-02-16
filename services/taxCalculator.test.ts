@@ -10,7 +10,8 @@ const createBaseInput = (): UserInput => ({
   state: 'Texas',
   hasMultiStateIncome: false,
   secondState: 'California',
-  secondStateIncomeShare: 50,
+  primaryStateIncome: 45000,
+  secondStateIncome: 45000,
   payFrequency: PayFrequency.YEARLY,
   grossPay: 90000,
   preTaxDeductions: 3000,
@@ -117,5 +118,36 @@ describe('calculateTax edge cases', () => {
     expect(biweekly.grossPay).toBeCloseTo(yearly.grossPay, 0);
     expect(biweekly.adjustedGrossIncome).toBeCloseTo(yearly.adjustedGrossIncome, 0);
     expect(biweekly.totalTaxLiability).toBeCloseTo(yearly.totalTaxLiability, 0);
+  });
+
+  test('Multi-state uses explicit state incomes and sums both state taxes', () => {
+    const multiState = calculateTax({
+      ...createBaseInput(),
+      state: 'California',
+      secondState: 'Texas',
+      hasMultiStateIncome: true,
+      grossPay: 90000,
+      preTaxDeductions: 9000,
+      primaryStateIncome: 60000,
+      secondStateIncome: 30000,
+    });
+
+    const californiaOnly = calculateTax({
+      ...createBaseInput(),
+      hasMultiStateIncome: false,
+      state: 'California',
+      grossPay: 54000,
+      preTaxDeductions: 0,
+    });
+
+    const texasOnly = calculateTax({
+      ...createBaseInput(),
+      hasMultiStateIncome: false,
+      state: 'Texas',
+      grossPay: 27000,
+      preTaxDeductions: 0,
+    });
+
+    expect(multiState.stateTax).toBeCloseTo(californiaOnly.stateTax + texasOnly.stateTax, 2);
   });
 });
