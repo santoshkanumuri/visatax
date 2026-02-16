@@ -1,5 +1,5 @@
 
-import { StateTaxInfo, FilingStatus, StateTaxConfig } from './types';
+import { StateTaxInfo, FilingStatus, StateTaxConfig, OnboardingPersona, OnboardingPreset, VisaStatus, Country, PayFrequency, F1WorkType } from './types';
 
 // ============================================
 // FICA TAX CONSTANTS
@@ -76,9 +76,99 @@ export const DEFAULT_FORM_VALUES = {
   YEARS_IN_US: 1,
   TAX_YEAR: 2025,
   STATE: 'Texas',
+  HAS_MULTI_STATE_INCOME: false,
+  SECOND_STATE: 'California',
+  SECOND_STATE_INCOME_SHARE: 50,
   HAS_STOCK_INCOME: false,
   STOCK_PROCEEDS: 0,
   STOCK_COST_BASIS: 0,
+};
+
+// ============================================
+// ONBOARDING PRESETS
+// ============================================
+export const ONBOARDING_PRESETS: Record<OnboardingPersona, OnboardingPreset> = {
+  new_f1: {
+    title: 'New F-1',
+    subtitle: 'First year student with a recent on-campus job or internship.',
+    steps: [
+      'Start with F-1 defaults and India treaty assumptions.',
+      'Add your annual or monthly pay from offer letter/paystub.',
+      'Confirm if any federal/state tax was already withheld.'
+    ],
+    prefill: {
+      visaStatus: VisaStatus.F1,
+      f1WorkType: F1WorkType.ON_CAMPUS,
+      country: Country.INDIA,
+      yearsInUS: 1,
+      hasMultiStateIncome: false,
+      secondState: DEFAULT_FORM_VALUES.SECOND_STATE,
+      secondStateIncomeShare: DEFAULT_FORM_VALUES.SECOND_STATE_INCOME_SHARE,
+      payFrequency: PayFrequency.YEARLY,
+      grossPay: 45000,
+      preTaxDeductions: 0,
+      federalTaxPaid: 2500,
+      ficaWithheld: 0,
+      stateTaxWithheld: 0,
+    },
+  },
+  f1_opt_cpt: {
+    title: 'F-1 on OPT/CPT',
+    subtitle: 'Working internship/full-time and usually paid every 2 weeks.',
+    steps: [
+      'Preset switches pay frequency to biweekly for easier paystub entry.',
+      'FICA estimate assumes exemption in first 5 calendar years.',
+      'You can update state and withholdings from latest paycheck.'
+    ],
+    prefill: {
+      visaStatus: VisaStatus.F1,
+      f1WorkType: F1WorkType.OPT,
+      country: Country.INDIA,
+      yearsInUS: 3,
+      hasMultiStateIncome: false,
+      secondState: DEFAULT_FORM_VALUES.SECOND_STATE,
+      secondStateIncomeShare: DEFAULT_FORM_VALUES.SECOND_STATE_INCOME_SHARE,
+      payFrequency: PayFrequency.BIWEEKLY,
+      grossPay: 3000,
+      preTaxDeductions: 100,
+      federalTaxPaid: 250,
+      ficaWithheld: 0,
+      stateTaxWithheld: 0,
+    },
+  },
+  h1b_first_year: {
+    title: 'H-1B First Year',
+    subtitle: 'New H-1B employee with regular payroll withholding.',
+    steps: [
+      'Preset applies H-1B status and common first-year assumptions.',
+      'Standard deduction is enabled through current resident-style logic.',
+      'Review FICA and state withholding against your year-to-date payslip.'
+    ],
+    prefill: {
+      visaStatus: VisaStatus.H1B,
+      f1WorkType: undefined,
+      country: Country.INDIA,
+      yearsInUS: 1,
+      hasMultiStateIncome: false,
+      secondState: DEFAULT_FORM_VALUES.SECOND_STATE,
+      secondStateIncomeShare: DEFAULT_FORM_VALUES.SECOND_STATE_INCOME_SHARE,
+      payFrequency: PayFrequency.YEARLY,
+      grossPay: 110000,
+      preTaxDeductions: 5000,
+      federalTaxPaid: 14000,
+      ficaWithheld: 8400,
+      stateTaxWithheld: 3000,
+    },
+  },
+};
+
+// ============================================
+// APP STORAGE KEYS
+// ============================================
+export const STORAGE_KEYS = {
+  PREFIX: 'visatax:',
+  FORM_DATA: 'visatax:v1:form',
+  SCENARIOS: 'visatax:v1:scenarios',
 };
 
 // ============================================
@@ -98,76 +188,6 @@ export const DISPLAY_CONSTANTS = {
   THOUSAND: 1000,
   CURRENCY_DECIMALS: 0,
   PERCENT_DECIMALS: 2,
-};
-
-// ============================================
-// TAX YEAR DATA (Federal Brackets, Deductions, Limits)
-// ============================================
-export const TAX_DATA = {
-  2024: {
-    STANDARD_DEDUCTION: {
-      [FilingStatus.SINGLE]: 14600,
-      [FilingStatus.MARRIED_JOINT]: 29200
-    },
-    SS_WAGE_BASE: 168600,
-    LIMITS: {
-      K401: 23000,
-      HSA_SINGLE: 4150,
-      HSA_FAMILY: 8300,
-    },
-    BRACKETS: {
-      [FilingStatus.SINGLE]: [
-        { limit: 11600, rate: 0.10 },
-        { limit: 47150, rate: 0.12 },
-        { limit: 100525, rate: 0.22 },
-        { limit: 191950, rate: 0.24 },
-        { limit: 243725, rate: 0.32 },
-        { limit: 609350, rate: 0.35 },
-        { limit: Infinity, rate: 0.37 },
-      ],
-      [FilingStatus.MARRIED_JOINT]: [
-        { limit: 23200, rate: 0.10 },
-        { limit: 94300, rate: 0.12 },
-        { limit: 201050, rate: 0.22 },
-        { limit: 383900, rate: 0.24 },
-        { limit: 487450, rate: 0.32 },
-        { limit: 731200, rate: 0.35 },
-        { limit: Infinity, rate: 0.37 },
-      ]
-    }
-  },
-  2025: {
-    STANDARD_DEDUCTION: {
-      [FilingStatus.SINGLE]: 15000,
-      [FilingStatus.MARRIED_JOINT]: 30000
-    },
-    SS_WAGE_BASE: 176100,
-    LIMITS: {
-      K401: 23500,
-      HSA_SINGLE: 4300,
-      HSA_FAMILY: 8550,
-    },
-    BRACKETS: {
-      [FilingStatus.SINGLE]: [
-        { limit: 11925, rate: 0.10 },
-        { limit: 48475, rate: 0.12 },
-        { limit: 103350, rate: 0.22 },
-        { limit: 197300, rate: 0.24 },
-        { limit: 250525, rate: 0.32 },
-        { limit: 626350, rate: 0.35 },
-        { limit: Infinity, rate: 0.37 },
-      ],
-      [FilingStatus.MARRIED_JOINT]: [
-        { limit: 23850, rate: 0.10 },
-        { limit: 96950, rate: 0.12 },
-        { limit: 206700, rate: 0.22 },
-        { limit: 394600, rate: 0.24 },
-        { limit: 501050, rate: 0.32 },
-        { limit: 751600, rate: 0.35 },
-        { limit: Infinity, rate: 0.37 },
-      ]
-    }
-  }
 };
 
 export const STATES_LIST: StateTaxInfo[] = [

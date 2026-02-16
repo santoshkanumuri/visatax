@@ -1,14 +1,29 @@
 
-import React, { useState, useMemo, useCallback } from 'react';
-import { Calculator, MapPin, Calendar, Globe, ChevronRight, ChevronDown, AlertCircle, CheckCircle2, Info, ArrowRight, Sparkles, Loader2, Bot, Users, Printer, ShieldCheck, AlertTriangle, X, Key } from 'lucide-react';
+import React, { useState, useMemo, useCallback, useEffect } from 'react';
+import { Calculator, MapPin, Calendar, Globe, ChevronRight, ChevronDown, AlertCircle, CheckCircle2, Info, ArrowRight, Sparkles, Loader2, Bot, Users, Printer, ShieldCheck, AlertTriangle, X, Key, RotateCcw, Link2 } from 'lucide-react';
 import { GoogleGenAI, Type } from "@google/genai";
-import { VisaStatus, Country, PayFrequency, UserInput, FilingStatus, ValidationError } from './types';
-import { STATES_LIST, TAX_DATA, DEFAULT_FORM_VALUES, INPUT_LIMITS, PAY_PERIOD_CONSTANTS, FICA_CONSTANTS, WITHHOLDING_DEFAULTS } from './constants';
+import { VisaStatus, Country, PayFrequency, UserInput, FilingStatus, ValidationError, OnboardingPersona, F1WorkType, SavedScenario, ConfidenceLevel } from './types';
+import { STATES_LIST, DEFAULT_FORM_VALUES, INPUT_LIMITS, PAY_PERIOD_CONSTANTS, FICA_CONSTANTS, WITHHOLDING_DEFAULTS, STORAGE_KEYS, ONBOARDING_PRESETS } from './constants';
 import { calculateTax, getAnnualAmount } from './services/taxCalculator';
 import { InputGroup } from './components/InputGroup';
 import { ResultChart } from './components/ResultChart';
 import { Tooltip } from './components/Tooltip';
 import { TaxAgentLoader } from './components/TaxAgentLoader';
+import { OnboardingWizard } from './components/OnboardingWizard';
+import { StepProgress } from './components/StepProgress';
+import { TaxTipsPanel } from './components/TaxTipsPanel';
+import { FicaRefundGuide } from './components/FicaRefundGuide';
+import { FormsChecklist } from './components/FormsChecklist';
+import { TaxTimeline } from './components/TaxTimeline';
+import { ScenarioCompare } from './components/ScenarioCompare';
+import { MobileSummaryBar } from './components/MobileSummaryBar';
+import { ConfidenceBadge } from './components/ConfidenceBadge';
+import { ExplainDrawer } from './components/ExplainDrawer';
+import { buildFormsChecklist } from './services/formsEngine';
+import { buildTaxTimeline } from './services/deadlineEngine';
+import { createScenario, loadScenarios, persistScenarios } from './services/scenarioStore';
+import { buildShareUrl, parseShareState } from './services/shareState';
+import { AVAILABLE_TAX_YEARS, DEFAULT_TAX_YEAR, getTaxRuleMeta, getTaxYearData } from './services/taxRulesLoader';
 
 // Interface for the structured Gemini response
 interface AiVerificationResponse {
@@ -27,24 +42,144 @@ interface AiVerificationResponse {
   summary: string;
 }
 
+const createDefaultFormData = (): UserInput => ({
+  visaStatus: VisaStatus.F1,
+  f1WorkType: F1WorkType.OPT,
+  country: Country.INDIA,
+  yearsInUS: DEFAULT_FORM_VALUES.YEARS_IN_US,
+  state: DEFAULT_FORM_VALUES.STATE,
+  hasMultiStateIncome: DEFAULT_FORM_VALUES.HAS_MULTI_STATE_INCOME,
+  secondState: DEFAULT_FORM_VALUES.SECOND_STATE,
+  secondStateIncomeShare: DEFAULT_FORM_VALUES.SECOND_STATE_INCOME_SHARE,
+  payFrequency: PayFrequency.YEARLY,
+  grossPay: DEFAULT_FORM_VALUES.GROSS_PAY,
+  preTaxDeductions: DEFAULT_FORM_VALUES.PRE_TAX_DEDUCTIONS,
+  federalTaxPaid: DEFAULT_FORM_VALUES.FEDERAL_TAX_PAID,
+  ficaWithheld: DEFAULT_FORM_VALUES.FICA_WITHHELD,
+  stateTaxWithheld: DEFAULT_FORM_VALUES.STATE_TAX_WITHHELD,
+  filingStatus: FilingStatus.SINGLE,
+  taxYear: DEFAULT_TAX_YEAR,
+  hasStockIncome: DEFAULT_FORM_VALUES.HAS_STOCK_INCOME,
+  stockProceeds: DEFAULT_FORM_VALUES.STOCK_PROCEEDS,
+  stockCostBasis: DEFAULT_FORM_VALUES.STOCK_COST_BASIS,
+});
+
+const validStates = new Set(STATES_LIST.map((state) => state.name));
+const validTaxYears = new Set(AVAILABLE_TAX_YEARS);
+
+const isEnumValue = <T extends string>(enumValues: Record<string, T>, value: unknown): value is T => {
+  return Object.values(enumValues).includes(value as T);
+};
+
+const parseNumber = (value: unknown, fallback: number): number => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+const parseOptionalNumber = (value: unknown): number | undefined => {
+  if (value === undefined || value === null || value === '') {
+    return undefined;
+  }
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+};
+
+const clamp = (value: number, min: number, max: number): number => {
+  return Math.min(Math.max(value, min), max);
+};
+
+const hydrateUserInput = (raw: unknown): UserInput => {
+  const defaults = createDefaultFormData();
+  if (!raw || typeof raw !== 'object') {
+    return defaults;
+  }
+
+  const candidate = raw as Partial<Record<keyof UserInput, unknown>>;
+  const standardDeductionOverride = parseOptionalNumber(candidate.standardDeductionOverride);
+  const stockProceeds = parseOptionalNumber(candidate.stockProceeds);
+  const stockCostBasis = parseOptionalNumber(candidate.stockCostBasis);
+  const secondStateIncomeShare = parseOptionalNumber(candidate.secondStateIncomeShare);
+  const parsedTaxYear = parseNumber(candidate.taxYear, defaults.taxYear);
+  const resolvedVisaStatus = isEnumValue(VisaStatus, candidate.visaStatus) ? candidate.visaStatus : defaults.visaStatus;
+  const resolvedF1WorkType = isEnumValue(F1WorkType, candidate.f1WorkType) ? candidate.f1WorkType : defaults.f1WorkType;
+
+  return {
+    ...defaults,
+    visaStatus: resolvedVisaStatus,
+    f1WorkType: resolvedVisaStatus === VisaStatus.F1 ? resolvedF1WorkType : undefined,
+    country: isEnumValue(Country, candidate.country) ? candidate.country : defaults.country,
+    yearsInUS: clamp(
+      parseNumber(candidate.yearsInUS, defaults.yearsInUS),
+      INPUT_LIMITS.YEARS_IN_US_MIN,
+      INPUT_LIMITS.YEARS_IN_US_MAX
+    ),
+    state: typeof candidate.state === 'string' && validStates.has(candidate.state) ? candidate.state : defaults.state,
+    hasMultiStateIncome: typeof candidate.hasMultiStateIncome === 'boolean' ? candidate.hasMultiStateIncome : defaults.hasMultiStateIncome,
+    secondState:
+      typeof candidate.secondState === 'string' && validStates.has(candidate.secondState)
+        ? candidate.secondState
+        : defaults.secondState,
+    secondStateIncomeShare:
+      secondStateIncomeShare !== undefined
+        ? clamp(secondStateIncomeShare, 1, 99)
+        : defaults.secondStateIncomeShare,
+    payFrequency: isEnumValue(PayFrequency, candidate.payFrequency) ? candidate.payFrequency : defaults.payFrequency,
+    grossPay: Math.max(INPUT_LIMITS.GROSS_PAY_MIN, parseNumber(candidate.grossPay, defaults.grossPay)),
+    preTaxDeductions: Math.max(
+      INPUT_LIMITS.PRE_TAX_DEDUCTIONS_MIN,
+      parseNumber(candidate.preTaxDeductions, defaults.preTaxDeductions)
+    ),
+    federalTaxPaid: Math.max(
+      INPUT_LIMITS.FEDERAL_TAX_WITHHELD_MIN,
+      parseNumber(candidate.federalTaxPaid, defaults.federalTaxPaid)
+    ),
+    ficaWithheld: Math.max(0, parseNumber(candidate.ficaWithheld, defaults.ficaWithheld)),
+    stateTaxWithheld: Math.max(0, parseNumber(candidate.stateTaxWithheld, defaults.stateTaxWithheld)),
+    filingStatus: isEnumValue(FilingStatus, candidate.filingStatus) ? candidate.filingStatus : defaults.filingStatus,
+    taxYear: validTaxYears.has(parsedTaxYear) ? parsedTaxYear : defaults.taxYear,
+    standardDeductionOverride: standardDeductionOverride !== undefined ? Math.max(0, standardDeductionOverride) : undefined,
+    hasStockIncome: typeof candidate.hasStockIncome === 'boolean' ? candidate.hasStockIncome : defaults.hasStockIncome,
+    stockProceeds: stockProceeds !== undefined ? Math.max(0, stockProceeds) : defaults.stockProceeds,
+    stockCostBasis: stockCostBasis !== undefined ? Math.max(0, stockCostBasis) : defaults.stockCostBasis,
+  };
+};
+
+const loadInitialFormData = (): UserInput => {
+  const defaults = createDefaultFormData();
+  if (typeof window === 'undefined') {
+    return defaults;
+  }
+
+  try {
+    const stored = localStorage.getItem(STORAGE_KEYS.FORM_DATA);
+    if (!stored) {
+      return defaults;
+    }
+    return hydrateUserInput(JSON.parse(stored));
+  } catch (error) {
+    console.error('Could not load saved VisaTax form data. Falling back to defaults.', error);
+    return defaults;
+  }
+};
+
+const hasSavedFormData = (): boolean => {
+  if (typeof window === 'undefined') {
+    return false;
+  }
+
+  try {
+    return Boolean(localStorage.getItem(STORAGE_KEYS.FORM_DATA));
+  } catch {
+    return false;
+  }
+};
+
 function App() {
-  const [formData, setFormData] = useState<UserInput>({
-    visaStatus: VisaStatus.F1,
-    country: Country.INDIA,
-    yearsInUS: DEFAULT_FORM_VALUES.YEARS_IN_US,
-    state: DEFAULT_FORM_VALUES.STATE,
-    payFrequency: PayFrequency.YEARLY,
-    grossPay: DEFAULT_FORM_VALUES.GROSS_PAY,
-    preTaxDeductions: DEFAULT_FORM_VALUES.PRE_TAX_DEDUCTIONS,
-    federalTaxPaid: DEFAULT_FORM_VALUES.FEDERAL_TAX_PAID,
-    ficaWithheld: DEFAULT_FORM_VALUES.FICA_WITHHELD,
-    stateTaxWithheld: DEFAULT_FORM_VALUES.STATE_TAX_WITHHELD,
-    filingStatus: FilingStatus.SINGLE,
-    taxYear: DEFAULT_FORM_VALUES.TAX_YEAR,
-    hasStockIncome: DEFAULT_FORM_VALUES.HAS_STOCK_INCOME,
-    stockProceeds: DEFAULT_FORM_VALUES.STOCK_PROCEEDS,
-    stockCostBasis: DEFAULT_FORM_VALUES.STOCK_COST_BASIS,
-  });
+  const [formData, setFormData] = useState<UserInput>(() => loadInitialFormData());
+  const [showOnboarding, setShowOnboarding] = useState<boolean>(() => !hasSavedFormData());
+  const [activeStep, setActiveStep] = useState<1 | 2 | 3>(1);
+  const [savedScenarios, setSavedScenarios] = useState<SavedScenario[]>(() => loadScenarios());
+  const [selectedScenarioIds, setSelectedScenarioIds] = useState<string[]>([]);
 
   const [isBreakdownExpanded, setIsBreakdownExpanded] = useState(false);
   const [aiAnalysis, setAiAnalysis] = useState<AiVerificationResponse | null>(null);
@@ -55,9 +190,51 @@ function App() {
   const [userApiKey, setUserApiKey] = useState('');
   const [tempApiKeyInput, setTempApiKeyInput] = useState('');
   const [apiKeyError, setApiKeyError] = useState('');
+  const [shareCopied, setShareCopied] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      try {
+        localStorage.setItem(STORAGE_KEYS.FORM_DATA, JSON.stringify(formData));
+      } catch (error) {
+        console.error('Could not persist VisaTax form data locally.', error);
+      }
+    }, 350);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [formData]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    const sharedState = parseShareState(window.location.search);
+    if (Object.keys(sharedState).length === 0) {
+      return;
+    }
+
+    setFormData((prev) => hydrateUserInput({ ...prev, ...sharedState }));
+    setShowOnboarding(false);
+    setActiveStep(3);
+  }, []);
+
+  useEffect(() => {
+    persistScenarios(savedScenarios);
+  }, [savedScenarios]);
 
   const handleInputChange = (field: keyof UserInput, value: any) => {
     const newFormData = { ...formData, [field]: value };
+    if (field === 'visaStatus' && value === VisaStatus.H1B) {
+      newFormData.f1WorkType = undefined;
+    }
+    if (field === 'visaStatus' && value === VisaStatus.F1 && !newFormData.f1WorkType) {
+      newFormData.f1WorkType = F1WorkType.OPT;
+    }
     setFormData(newFormData);
     setAiAnalysis(null); // Clear previous analysis on change
     
@@ -81,6 +258,9 @@ function App() {
     formData.country,
     formData.yearsInUS,
     formData.state,
+    formData.hasMultiStateIncome,
+    formData.secondState,
+    formData.secondStateIncomeShare,
     formData.payFrequency,
     formData.grossPay,
     formData.preTaxDeductions,
@@ -122,15 +302,64 @@ function App() {
     return Math.round(annualGross * estimatedRate);
   }, [formData.grossPay, formData.payFrequency, formData.state]);
 
-  const taxYearLimits = useMemo(() => 
-    TAX_DATA[formData.taxYear as keyof typeof TAX_DATA]?.LIMITS || TAX_DATA[2025].LIMITS, 
-  [formData.taxYear]);
+  const taxYearData = useMemo(() => getTaxYearData(formData.taxYear), [formData.taxYear]);
+  const taxYearLimits = useMemo(() => taxYearData.LIMITS, [taxYearData]);
+  const activeTaxRuleMeta = useMemo(() => getTaxRuleMeta(formData.taxYear), [formData.taxYear]);
+
+  const annualFicaWithheld = useMemo(
+    () => getAnnualAmount(formData.ficaWithheld, formData.payFrequency),
+    [formData.ficaWithheld, formData.payFrequency]
+  );
+
+  const formsChecklist = useMemo(() => buildFormsChecklist(formData, results), [formData, results]);
+  const timelineSections = useMemo(
+    () => buildTaxTimeline(formData, results, formsChecklist),
+    [formData, results, formsChecklist]
+  );
+
+  const showFicaRefundGuide =
+    formData.visaStatus === VisaStatus.F1 &&
+    formData.yearsInUS <= FICA_CONSTANTS.F1_EXEMPTION_CALENDAR_YEARS &&
+    annualFicaWithheld > 0;
+
+  const confidenceLevels = useMemo(() => {
+    const hasInterpolatedStateEstimate = results.messages.some((message) =>
+      message.includes('estimated using effective rate interpolation')
+    );
+    const formsNeedConfirmation = formsChecklist.some((item) => item.confidence === 'Needs Confirmation');
+
+    const stateConfidence: ConfidenceLevel =
+      hasInterpolatedStateEstimate || formData.hasMultiStateIncome ? 'Estimated' : 'Exact';
+    const formsConfidence: ConfidenceLevel = formsNeedConfirmation ? 'Needs confirmation' : 'Estimated';
+
+    return {
+      federal: 'Exact' as ConfidenceLevel,
+      fica: 'Exact' as ConfidenceLevel,
+      state: stateConfidence,
+      forms: formsConfidence,
+    };
+  }, [formsChecklist, formData.hasMultiStateIncome, results.messages]);
 
   const formatCurrency = (val: number) => 
     new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(val);
 
   const formatPercent = (val: number) => 
     (val * 100).toFixed(2) + '%';
+
+  const formattedRulesUpdatedDate = useMemo(() => {
+    if (!activeTaxRuleMeta.lastUpdated) {
+      return 'Unknown';
+    }
+    const date = new Date(activeTaxRuleMeta.lastUpdated);
+    if (Number.isNaN(date.getTime())) {
+      return activeTaxRuleMeta.lastUpdated;
+    }
+    return new Intl.DateTimeFormat('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    }).format(date);
+  }, [activeTaxRuleMeta.lastUpdated]);
 
   const getDisplayedTakeHome = () => {
     switch(takeHomePeriod) {
@@ -194,10 +423,103 @@ function App() {
     window.print();
   };
 
+  const handleResetForm = () => {
+    const shouldReset = window.confirm(
+      'Reset all inputs to default values? This will clear locally saved form data for this browser.'
+    );
+    if (!shouldReset) {
+      return;
+    }
+
+    setFormData(createDefaultFormData());
+    setValidationErrors([]);
+    setAiAnalysis(null);
+    setIsBreakdownExpanded(false);
+    setTakeHomePeriod('yearly');
+    setShowOnboarding(true);
+    setActiveStep(1);
+    setSelectedScenarioIds([]);
+
+    try {
+      localStorage.removeItem(STORAGE_KEYS.FORM_DATA);
+    } catch (error) {
+      console.error('Could not clear saved VisaTax form data.', error);
+    }
+  };
+
+  const handleOnboardingPersonaSelect = (persona: OnboardingPersona) => {
+    const preset = ONBOARDING_PRESETS[persona];
+    const nextFormData = hydrateUserInput({
+      ...createDefaultFormData(),
+      ...preset.prefill,
+    });
+
+    setFormData(nextFormData);
+    setValidationErrors([]);
+    setAiAnalysis(null);
+    setIsBreakdownExpanded(false);
+    setShowOnboarding(false);
+    setActiveStep(1);
+  };
+
+  const handleSaveScenario = (scenarioName: string) => {
+    const normalizedName = scenarioName.trim() || `Scenario ${savedScenarios.length + 1}`;
+    const scenario = createScenario(normalizedName, formData);
+    setSavedScenarios((prev) => [scenario, ...prev].slice(0, 8));
+  };
+
+  const handleDeleteScenario = (scenarioId: string) => {
+    setSavedScenarios((prev) => prev.filter((scenario) => scenario.id !== scenarioId));
+    setSelectedScenarioIds((prev) => prev.filter((id) => id !== scenarioId));
+  };
+
+  const handleLoadScenario = (scenarioId: string) => {
+    const scenario = savedScenarios.find((item) => item.id === scenarioId);
+    if (!scenario) return;
+    setFormData(hydrateUserInput(scenario.input));
+    setAiAnalysis(null);
+    setActiveStep(3);
+    setShowOnboarding(false);
+  };
+
+  const handleSelectScenario = (scenarioId: string) => {
+    setSelectedScenarioIds((prev) => {
+      if (prev.includes(scenarioId)) {
+        return prev.filter((id) => id !== scenarioId);
+      }
+      if (prev.length >= 2) {
+        return [prev[1], scenarioId];
+      }
+      return [...prev, scenarioId];
+    });
+  };
+
+  const handleCopyShareLink = async () => {
+    const shareUrl = buildShareUrl(formData);
+    if (!shareUrl) return;
+
+    try {
+      await navigator.clipboard.writeText(shareUrl);
+      setShareCopied(true);
+      window.setTimeout(() => setShareCopied(false), 1800);
+    } catch (error) {
+      console.error('Could not copy share URL.', error);
+    }
+  };
+
+  const goToPreviousStep = () => {
+    setActiveStep((prev) => (prev > 1 ? ((prev - 1) as 1 | 2 | 3) : prev));
+  };
+
+  const goToNextStep = () => {
+    setActiveStep((prev) => (prev < 3 ? ((prev + 1) as 1 | 2 | 3) : prev));
+  };
+
   const getActiveApiKey = (): string | null => {
     // First try user-provided key, then fall back to env key
     if (userApiKey) return userApiKey;
-    if (process.env.API_KEY) return process.env.API_KEY;
+    const envApiKey = import.meta.env.VITE_GEMINI_API_KEY;
+    if (envApiKey) return envApiKey;
     return null;
   };
 
@@ -238,6 +560,7 @@ function App() {
         
         User Profile:
         - Visa: ${formData.visaStatus}
+        - F-1 Work Type: ${formData.f1WorkType || 'N/A'}
         - Citizenship: ${formData.country}
         - Years in US: ${formData.yearsInUS}
         - State: ${formData.state}
@@ -432,24 +755,54 @@ function App() {
             </div>
             <div>
               <h1 className="text-xl font-bold text-slate-900 tracking-tight">VisaTax</h1>
-              <p className="text-slate-500 text-sm">International Student & Worker Tax Estimator</p>
+              <div className="flex items-center">
+                <p className="text-slate-500 text-sm">International Student & Worker Tax Estimator</p>
+                <Tooltip text="Your inputs are auto-saved only in this browser, so you can come back later without re-entering everything." />
+              </div>
             </div>
           </div>
-          <button 
-            onClick={handlePrint}
-            className="hidden md:flex items-center gap-2 text-sm font-medium text-slate-600 hover:text-blue-600 transition-colors bg-slate-50 hover:bg-blue-50 px-4 py-2 rounded-lg no-print"
-          >
-            <Printer size={18} />
-            Print Report
-          </button>
+          <div className="hidden md:flex items-center gap-2 no-print">
+            <button
+              onClick={handleCopyShareLink}
+              className="items-center gap-2 text-sm font-medium text-slate-600 hover:text-indigo-600 transition-colors bg-slate-50 hover:bg-indigo-50 px-4 py-2 rounded-lg inline-flex"
+            >
+              <Link2 size={16} />
+              {shareCopied ? 'Link Copied' : 'Copy Share Link'}
+            </button>
+            <button
+              onClick={handleResetForm}
+              className="items-center gap-2 text-sm font-medium text-slate-600 hover:text-rose-600 transition-colors bg-slate-50 hover:bg-rose-50 px-4 py-2 rounded-lg inline-flex"
+            >
+              <RotateCcw size={16} />
+              Reset Form
+            </button>
+            <button
+              onClick={handlePrint}
+              className="inline-flex items-center gap-2 text-sm font-medium text-slate-600 hover:text-blue-600 transition-colors bg-slate-50 hover:bg-blue-50 px-4 py-2 rounded-lg"
+            >
+              <Printer size={18} />
+              Print Report
+            </button>
+          </div>
         </div>
       </div>
 
       <div className="max-w-6xl mx-auto px-4 py-8">
+        <div className="mb-6 print:hidden">
+          <StepProgress activeStep={activeStep} onStepChange={setActiveStep} />
+        </div>
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
           
           {/* Left Column: Input Form */}
           <div className="lg:col-span-5 space-y-6 print:hidden">
+            {showOnboarding && (
+              <OnboardingWizard
+                onSelectPersona={handleOnboardingPersonaSelect}
+                onSkip={() => setShowOnboarding(false)}
+              />
+            )}
+
+            {activeStep === 1 && (
             <div className="bg-white rounded-2xl shadow-sm border border-slate-200">
               <div className="p-6">
                 <h2 className="text-lg font-bold text-slate-900 mb-6 flex items-center gap-2">
@@ -459,15 +812,18 @@ function App() {
                 
                 <div className="space-y-5">
                    <div className="grid grid-cols-2 gap-5">
-                      <InputGroup label="Tax Year" tooltip="Select the tax year for calculation. 2024 is for filing in April 2025.">
+                      <InputGroup label="Tax Year" tooltip="Select the tax year you are estimating taxes for. Example: choose 2025 for returns usually filed in 2026.">
                         <div className="relative">
                           <select 
                             className="w-full appearance-none bg-slate-50 border border-slate-200 text-slate-900 text-sm font-medium rounded-xl hover:border-blue-400 focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 block p-3 pr-8 transition-all outline-none"
                             value={formData.taxYear}
                             onChange={(e) => handleInputChange('taxYear', parseInt(e.target.value))}
                           >
-                            <option value={2024}>2024</option>
-                            <option value={2025}>2025</option>
+                            {AVAILABLE_TAX_YEARS.map((year) => (
+                              <option key={year} value={year}>
+                                {year}
+                              </option>
+                            ))}
                           </select>
                           <div className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-slate-400">
                             <ChevronDown size={14} />
@@ -507,6 +863,29 @@ function App() {
                       </div>
                     </div>
                   </InputGroup>
+
+                  {formData.visaStatus === VisaStatus.F1 && (
+                    <InputGroup label="F-1 Work Type" tooltip="Pick the option that best matches your current F-1 work authorization. This helps personalize guidance text and tips.">
+                      <div className="relative">
+                        <select
+                          className="w-full appearance-none bg-slate-50 border border-slate-200 text-slate-900 text-sm font-medium rounded-xl hover:border-blue-400 focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 block p-3 pr-8 transition-all outline-none"
+                          value={formData.f1WorkType || F1WorkType.OPT}
+                          onChange={(e) => handleInputChange('f1WorkType', e.target.value)}
+                        >
+                          <option value={F1WorkType.OPT}>OPT</option>
+                          <option value={F1WorkType.CPT}>CPT</option>
+                          <option value={F1WorkType.ON_CAMPUS}>On-campus</option>
+                          <option value={F1WorkType.OTHER}>Other</option>
+                        </select>
+                        <div className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-slate-400">
+                          <ChevronDown size={14} />
+                        </div>
+                      </div>
+                      <p className="text-xs text-slate-500 mt-1">
+                        Guidance-only field. Tax formulas still use your core profile inputs.
+                      </p>
+                    </InputGroup>
+                  )}
 
                   {/* F-1 Visual Timeline */}
                   {formData.visaStatus === VisaStatus.F1 && (
@@ -561,12 +940,15 @@ function App() {
                         />
                         <Calendar size={16} className="absolute right-3 top-3.5 text-slate-400 pointer-events-none" />
                       </div>
-                      {getFieldErrors('yearsInUS').map((err, i) => (
-                        <p key={i} className={`text-xs mt-1 ${err.severity === 'error' ? 'text-red-600' : 'text-amber-600'}`}>
-                          {err.message}
-                        </p>
-                      ))}
-                    </InputGroup>
+                    {getFieldErrors('yearsInUS').map((err, i) => (
+                      <p key={i} className={`text-xs mt-1 ${err.severity === 'error' ? 'text-red-600' : 'text-amber-600'}`}>
+                        {err.message}
+                      </p>
+                    ))}
+                    <p className="text-xs text-slate-500 mt-1">
+                      Example: If you first entered the US in August 2023, 2023 counts as year 1.
+                    </p>
+                  </InputGroup>
 
                     <InputGroup label="State" tooltip="State tax rates vary significantly.">
                       <div className="relative">
@@ -598,10 +980,77 @@ function App() {
                       </div>
                     </InputGroup>
                   </div>
+
+                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                    <div className="flex items-start gap-3">
+                      <input
+                        id="hasMultiStateIncome"
+                        type="checkbox"
+                        checked={formData.hasMultiStateIncome}
+                        onChange={(e) => handleInputChange('hasMultiStateIncome', e.target.checked)}
+                        className="mt-0.5 w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500/20"
+                      />
+                      <div>
+                        <label htmlFor="hasMultiStateIncome" className="text-sm font-medium text-slate-800 cursor-pointer">
+                          I worked/studied in more than one state this tax year
+                        </label>
+                        <p className="text-xs text-slate-500 mt-1">
+                          Useful for internship + campus combinations (example: California internship, Texas school).
+                        </p>
+                      </div>
+                    </div>
+
+                    {formData.hasMultiStateIncome && (
+                      <div className="mt-4 grid grid-cols-1 gap-4">
+                        <InputGroup label="Second State" tooltip="Add the additional state where part of your income was earned.">
+                          <div className="relative">
+                            <select
+                              className="w-full appearance-none bg-white border border-slate-200 text-slate-900 text-sm font-medium rounded-xl hover:border-blue-400 focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 block p-3 pr-8 transition-all outline-none"
+                              value={formData.secondState}
+                              onChange={(e) => handleInputChange('secondState', e.target.value)}
+                            >
+                              {STATES_LIST.map((state) => (
+                                <option key={state.name} value={state.name}>
+                                  {state.name}
+                                </option>
+                              ))}
+                            </select>
+                            <div className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-slate-400">
+                              <ChevronDown size={14} />
+                            </div>
+                          </div>
+                        </InputGroup>
+
+                        <InputGroup
+                          label={`Income Split To ${formData.secondState} (%)`}
+                          tooltip="Set what percent of your annual income belongs to the second state. Remaining income stays in your primary state."
+                        >
+                          <div>
+                            <input
+                              type="range"
+                              min={1}
+                              max={99}
+                              step={1}
+                              value={formData.secondStateIncomeShare || 50}
+                              onChange={(e) => handleInputChange('secondStateIncomeShare', parseInt(e.target.value, 10))}
+                              className="w-full accent-blue-600"
+                            />
+                            <div className="flex justify-between text-xs text-slate-500 mt-1">
+                              <span>{100 - (formData.secondStateIncomeShare || 50)}% in {formData.state}</span>
+                              <span>{formData.secondStateIncomeShare || 50}% in {formData.secondState}</span>
+                            </div>
+                          </div>
+                        </InputGroup>
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
             </div>
+            )}
 
+            {activeStep === 2 && (
+            <>
             <div className="bg-white rounded-2xl shadow-sm border border-slate-200">
               <div className="p-6">
                 <div className="flex justify-between items-center mb-6">
@@ -622,11 +1071,20 @@ function App() {
                     >
                       Monthly
                     </button>
+                    <button
+                      className={`px-3 py-1.5 rounded-md transition-all ${formData.payFrequency === PayFrequency.BIWEEKLY ? 'bg-white shadow text-slate-900' : 'text-slate-500 hover:text-slate-700'}`}
+                      onClick={() => handleInputChange('payFrequency', PayFrequency.BIWEEKLY)}
+                    >
+                      Biweekly
+                    </button>
                   </div>
                 </div>
+                <p className="text-xs text-slate-500 -mt-4 mb-4">
+                  Enter amounts per selected frequency. We automatically convert to annual values for calculations.
+                </p>
 
                 <div className="space-y-5">
-                  <InputGroup label="Gross Pay" tooltip="Your total salary before taxes.">
+                  <InputGroup label="Gross Pay" tooltip="Your total salary before taxes. Enter yearly, monthly, or biweekly amount based on selected pay frequency.">
                     <div className="relative group">
                       <div className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
                         <span className="text-slate-400 font-bold">$</span>
@@ -644,6 +1102,9 @@ function App() {
                         {err.message}
                       </p>
                     ))}
+                    <p className="text-xs text-slate-500 mt-1">
+                      Example: If gross pay on each paycheck is $3,000, choose Biweekly and enter 3000.
+                    </p>
                   </InputGroup>
 
                   <InputGroup label="Pre-Tax Deductions (401k/HSA)" tooltip="Money taken out for retirement or health insurance before tax.">
@@ -699,6 +1160,9 @@ function App() {
                         {err.message}
                       </p>
                     ))}
+                    <p className="text-xs text-slate-500 mt-1">
+                      Example: Use year-to-date Federal withholding from your latest paystub.
+                    </p>
                   </InputGroup>
 
                   <InputGroup label="FICA Tax Withheld (YTD)" tooltip="Social Security + Medicare taxes withheld from your paystubs. F-1 students under 5 years are typically exempt.">
@@ -865,10 +1329,79 @@ function App() {
                 <ResultChart result={results} />
               </div>
             </div>
+            </>
+            )}
+
+            {activeStep === 3 && (
+              <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+                <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wide">Review Mode</h3>
+                <p className="text-sm text-slate-600 mt-2">
+                  Your full estimate and explanations are shown on the right. Use Edit buttons below to quickly adjust inputs.
+                </p>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <button
+                    onClick={() => setActiveStep(1)}
+                    className="px-3 py-2 text-xs font-medium rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 transition-colors"
+                  >
+                    Edit Profile
+                  </button>
+                  <button
+                    onClick={() => setActiveStep(2)}
+                    className="px-3 py-2 text-xs font-medium rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 transition-colors"
+                  >
+                    Edit Income
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-4">
+              <div className="flex items-center justify-between gap-3">
+                <button
+                  onClick={goToPreviousStep}
+                  disabled={activeStep === 1}
+                  className="px-4 py-2 rounded-lg border border-slate-200 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  Back
+                </button>
+                <p className="text-xs text-slate-500">
+                  Step {activeStep} of 3
+                </p>
+                <button
+                  onClick={goToNextStep}
+                  disabled={activeStep === 3}
+                  className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  Continue
+                </button>
+              </div>
+            </div>
           </div>
 
           {/* Right Column: The Receipt */}
           <div className="lg:col-span-7 space-y-6">
+            {activeStep === 3 ? (
+              <>
+            <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Tax Rule Version</p>
+                <p className="text-sm font-medium text-slate-900">
+                  {activeTaxRuleMeta.year} (v{activeTaxRuleMeta.version})
+                </p>
+              </div>
+              <div className="text-sm text-slate-600">
+                <p>Last updated: <span className="font-medium text-slate-800">{formattedRulesUpdatedDate}</span></p>
+                <a
+                  href={activeTaxRuleMeta.sourceUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-blue-600 hover:text-blue-700 underline"
+                >
+                  Source: {activeTaxRuleMeta.sourceLabel}
+                </a>
+              </div>
+            </div>
+
             
             {/* Top Stat Card (Waterfall) */}
             <div className="bg-white rounded-2xl shadow-xl shadow-slate-200/50 border border-slate-100">
@@ -958,6 +1491,34 @@ function App() {
               </div>
             </div>
 
+            <div className="space-y-3">
+              <ExplainDrawer
+                title="Explain Federal Tax"
+                summary="Progressive bracket calculation on taxable income"
+              >
+                <p>
+                  Taxable income is computed as gross pay minus pre-tax deductions and standard deduction.
+                  Federal tax then applies progressively by bracket, not at one flat rate.
+                </p>
+                <p className="mt-2">
+                  Current formula: {formatCurrency(results.grossPay)} - {formatCurrency(getAnnualAmount(formData.preTaxDeductions, formData.payFrequency))} - {formatCurrency(results.standardDeduction)} = {formatCurrency(results.taxableIncome)} taxable income.
+                </p>
+              </ExplainDrawer>
+
+              <ExplainDrawer
+                title="Explain State Tax"
+                summary="Uses state-specific rules and may be estimated in some cases"
+              >
+                <p>
+                  State tax uses your selected state (or multi-state split if enabled). For some states without full mapped brackets, this tool uses a
+                  rate interpolation estimate.
+                </p>
+                <p className="mt-2">
+                  Effective rate used right now: {formatPercent(results.stateRateUsed)} on adjusted income.
+                </p>
+              </ExplainDrawer>
+            </div>
+
             {/* Liability Card */}
             <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 flex flex-col">
               <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wide mb-6">Tax Liability</h3>
@@ -967,6 +1528,7 @@ function App() {
                     <div className="flex items-center gap-2">
                       <div className="w-2 h-2 rounded-full bg-blue-500"></div>
                       <span className="text-slate-600 text-sm">Federal Tax</span>
+                      <ConfidenceBadge level={confidenceLevels.federal} />
                     </div>
                     <span className="text-slate-900 font-semibold">{formatCurrency(results.federalTaxLiability)}</span>
                   </div>
@@ -978,6 +1540,7 @@ function App() {
                         <span className="text-slate-600 text-sm">State Tax</span>
                         <Tooltip text={`${currentStateInfo?.name} Tax Range: ${formatPercent(currentStateInfo?.minRate || 0)} - ${formatPercent(currentStateInfo?.maxRate || 0)}. Estimated effective rate: ${formatPercent(results.stateRateUsed)}`} />
                       </div>
+                      <ConfidenceBadge level={confidenceLevels.state} />
                     </div>
                     <span className="text-slate-900 font-semibold">{formatCurrency(results.stateTax)}</span>
                   </div>
@@ -1003,6 +1566,7 @@ function App() {
                         <span className="text-slate-600 text-sm">FICA</span>
                         <Tooltip text={results.messages.find(m => m.includes('FICA')) || 'Social Security & Medicare'} />
                       </div>
+                      <ConfidenceBadge level={confidenceLevels.fica} />
                     </div>
                     <span className="text-slate-900 font-semibold">{formatCurrency(results.ficaTax)}</span>
                   </div>
@@ -1158,10 +1722,37 @@ function App() {
                    </div>
                  )}
                </div>
-            </div>
-            
-            {/* AI Verification Section */}
-            <div className="mt-4 no-print">
+             </div>
+             
+             <TaxTipsPanel
+               input={formData}
+               result={results}
+               taxYear401kLimit={taxYearLimits.K401}
+               stateInfo={currentStateInfo}
+             />
+
+             {showFicaRefundGuide && (
+               <FicaRefundGuide
+                 annualFicaWithheld={annualFicaWithheld}
+                 yearsInUS={formData.yearsInUS}
+               />
+             )}
+
+             <FormsChecklist items={formsChecklist} confidence={confidenceLevels.forms} />
+
+             <TaxTimeline sections={timelineSections} />
+
+             <ScenarioCompare
+               scenarios={savedScenarios}
+               selectedScenarioIds={selectedScenarioIds}
+               onSelectScenario={handleSelectScenario}
+               onDeleteScenario={handleDeleteScenario}
+               onLoadScenario={handleLoadScenario}
+               onSaveScenario={handleSaveScenario}
+             />
+
+             {/* AI Verification Section */}
+             <div className="mt-4 no-print">
                {isVerifying ? (
                  <TaxAgentLoader />
                ) : (
@@ -1296,10 +1887,39 @@ function App() {
               Estimates are based on {formData.taxYear} brackets. State taxes are approximated using effective rate estimation based on income. 
               Always consult a CPA or tax professional before filing.
             </p>
+              </>
+            ) : (
+              <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+                <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wide">Review Unlocks Here</h3>
+                <p className="text-sm text-slate-600 mt-2">
+                  Complete Profile and Income steps, then move to Review to see detailed calculations, explanations, and refund/owe breakdown.
+                </p>
+                <div className="mt-4 grid grid-cols-2 gap-3">
+                  <div className="rounded-xl border border-slate-200 p-3 bg-slate-50">
+                    <p className="text-xs text-slate-500">Current Take Home</p>
+                    <p className="text-lg font-bold text-slate-900 mt-1">{formatCurrency(results.takeHomePay)}</p>
+                  </div>
+                  <div className="rounded-xl border border-slate-200 p-3 bg-slate-50">
+                    <p className="text-xs text-slate-500">Current Refund/Owe</p>
+                    <p className={`text-lg font-bold mt-1 ${results.totalRefundOrOwe >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                      {results.totalRefundOrOwe >= 0 ? '+' : '-'}{formatCurrency(Math.abs(results.totalRefundOrOwe))}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setActiveStep(3)}
+                  className="mt-4 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium"
+                >
+                  Jump To Review
+                </button>
+              </div>
+            )}
 
           </div>
         </div>
       </div>
+
+      <MobileSummaryBar totalRefundOrOwe={results.totalRefundOrOwe} onOpenReview={() => setActiveStep(3)} />
     </div>
   );
 }

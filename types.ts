@@ -4,6 +4,13 @@ export enum VisaStatus {
   H1B = 'H-1B Worker'
 }
 
+export enum F1WorkType {
+  OPT = 'OPT',
+  CPT = 'CPT',
+  ON_CAMPUS = 'On-campus',
+  OTHER = 'Other',
+}
+
 export enum Country {
   INDIA = 'India',
   CHINA = 'China',
@@ -12,7 +19,8 @@ export enum Country {
 
 export enum PayFrequency {
   YEARLY = 'Yearly',
-  MONTHLY = 'Monthly'
+  MONTHLY = 'Monthly',
+  BIWEEKLY = 'Biweekly'
 }
 
 export enum FilingStatus {
@@ -22,9 +30,13 @@ export enum FilingStatus {
 
 export interface UserInput {
   visaStatus: VisaStatus;
+  f1WorkType?: F1WorkType;
   country: Country;
   yearsInUS: number;
   state: string;
+  hasMultiStateIncome: boolean;
+  secondState?: string;
+  secondStateIncomeShare?: number;
   payFrequency: PayFrequency;
   grossPay: number;
   preTaxDeductions: number;
@@ -37,6 +49,15 @@ export interface UserInput {
   hasStockIncome: boolean;
   stockProceeds?: number;
   stockCostBasis?: number;
+}
+
+export type OnboardingPersona = 'new_f1' | 'f1_opt_cpt' | 'h1b_first_year';
+
+export interface OnboardingPreset {
+  title: string;
+  subtitle: string;
+  steps: string[];
+  prefill: Partial<UserInput>;
 }
 
 export interface BracketDetail {
@@ -114,4 +135,40 @@ export interface StateTaxConfig {
     [FilingStatus.SINGLE]: TaxBracket[];
     [FilingStatus.MARRIED_JOINT]: TaxBracket[];
   };
+}
+
+export interface SavedScenario {
+  id: string;
+  name: string;
+  createdAt: string;
+  input: UserInput;
+}
+
+export type ConfidenceLevel = 'Exact' | 'Estimated' | 'Needs confirmation';
+
+export interface TaxRuleLimits {
+  K401: number;
+  HSA_SINGLE: number;
+  HSA_FAMILY: number;
+}
+
+export interface TaxRuleYearData {
+  STANDARD_DEDUCTION: {
+    [FilingStatus.SINGLE]: number;
+    [FilingStatus.MARRIED_JOINT]: number;
+  };
+  SS_WAGE_BASE: number;
+  LIMITS: TaxRuleLimits;
+  BRACKETS: {
+    [FilingStatus.SINGLE]: TaxBracket[];
+    [FilingStatus.MARRIED_JOINT]: TaxBracket[];
+  };
+}
+
+export interface TaxRuleMeta {
+  year: number;
+  version: string;
+  lastUpdated: string;
+  sourceLabel: string;
+  sourceUrl: string;
 }

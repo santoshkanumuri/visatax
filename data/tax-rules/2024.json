@@ -1,0 +1,32 @@
+{
+  "standardDeduction": {
+    "single": 14600,
+    "married_joint": 29200
+  },
+  "ssWageBase": 168600,
+  "limits": {
+    "K401": 23000,
+    "HSA_SINGLE": 4150,
+    "HSA_FAMILY": 8300
+  },
+  "brackets": {
+    "single": [
+      { "limit": 11600, "rate": 0.1 },
+      { "limit": 47150, "rate": 0.12 },
+      { "limit": 100525, "rate": 0.22 },
+      { "limit": 191950, "rate": 0.24 },
+      { "limit": 243725, "rate": 0.32 },
+      { "limit": 609350, "rate": 0.35 },
+      { "limit": "Infinity", "rate": 0.37 }
+    ],
+    "married_joint": [
+      { "limit": 23200, "rate": 0.1 },
+      { "limit": 94300, "rate": 0.12 },
+      { "limit": 201050, "rate": 0.22 },
+      { "limit": 383900, "rate": 0.24 },
+      { "limit": 487450, "rate": 0.32 },
+      { "limit": 731200, "rate": 0.35 },
+      { "limit": "Infinity", "rate": 0.37 }
+    ]
+  }
+}

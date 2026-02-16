@@ -1,6 +1,7 @@
 
 import { UserInput, TaxResult, VisaStatus, Country, PayFrequency, BracketDetail, FICABreakdown, FilingStatus } from '../types';
-import { TAX_DATA, STATES_LIST, STATE_GRADUATED_BRACKETS, FICA_CONSTANTS, STATE_TAX_CONSTANTS, PAY_PERIOD_CONSTANTS, CAPITAL_GAINS_CONSTANTS } from '../constants';
+import { STATES_LIST, STATE_GRADUATED_BRACKETS, FICA_CONSTANTS, STATE_TAX_CONSTANTS, PAY_PERIOD_CONSTANTS, CAPITAL_GAINS_CONSTANTS } from '../constants';
+import { getTaxYearData } from './taxRulesLoader';
 
 // ============================================
 // UTILITY FUNCTIONS
@@ -10,16 +11,14 @@ import { TAX_DATA, STATES_LIST, STATE_GRADUATED_BRACKETS, FICA_CONSTANTS, STATE_
  * Annualize an amount based on pay frequency
  */
 export const getAnnualAmount = (amount: number, frequency: PayFrequency): number => {
-  return frequency === PayFrequency.MONTHLY 
-    ? amount * PAY_PERIOD_CONSTANTS.MONTHS_PER_YEAR 
-    : amount;
-};
-
-/**
- * Get tax year data with fallback to 2025
- */
-const getTaxYearData = (taxYear: number) => {
-  return TAX_DATA[taxYear as keyof typeof TAX_DATA] || TAX_DATA[2025];
+  switch (frequency) {
+    case PayFrequency.MONTHLY:
+      return amount * PAY_PERIOD_CONSTANTS.MONTHS_PER_YEAR;
+    case PayFrequency.BIWEEKLY:
+      return amount * PAY_PERIOD_CONSTANTS.BIWEEKLY_PERIODS_PER_YEAR;
+    default:
+      return amount;
+  }
 };
 
 // ============================================
@@ -75,6 +74,67 @@ const calculateFICA = (
     exemptionReason: visaStatus === VisaStatus.F1 
       ? `You have exceeded the ${FICA_CONSTANTS.F1_EXEMPTION_CALENDAR_YEARS}-year FICA exemption period for F-1 students.`
       : undefined
+  };
+};
+
+const calculateStateTaxForIncome = (
+  stateName: string,
+  adjustedGrossIncome: number,
+  filingStatus: FilingStatus
+): { tax: number; effectiveRate: number; message: string } => {
+  const stateInfo = STATES_LIST.find((state) => state.name === stateName);
+
+  if (!stateInfo) {
+    return { tax: 0, effectiveRate: 0, message: `${stateName} state tax configuration is unavailable.` };
+  }
+
+  if (stateInfo.category === 'none') {
+    return { tax: 0, effectiveRate: 0, message: `${stateInfo.name} has no state income tax.` };
+  }
+
+  if (stateInfo.category === 'flat') {
+    const effectiveRate = stateInfo.minRate;
+    return {
+      tax: adjustedGrossIncome * effectiveRate,
+      effectiveRate,
+      message: `${stateInfo.name} has a flat income tax rate of ${(effectiveRate * 100).toFixed(2)}%.`,
+    };
+  }
+
+  const specificBrackets = STATE_GRADUATED_BRACKETS[stateInfo.name]?.[filingStatus];
+  if (specificBrackets) {
+    let remainingIncome = adjustedGrossIncome;
+    let previousLimit = 0;
+    let tax = 0;
+
+    for (const bracket of specificBrackets) {
+      if (remainingIncome <= 0) break;
+      const bracketWidth = bracket.limit - previousLimit;
+      const taxableInThisBracket = Math.min(remainingIncome, bracketWidth);
+      tax += taxableInThisBracket * bracket.rate;
+      remainingIncome -= taxableInThisBracket;
+      previousLimit = bracket.limit;
+    }
+
+    const effectiveRate = adjustedGrossIncome > 0 ? tax / adjustedGrossIncome : 0;
+    return {
+      tax,
+      effectiveRate,
+      message: `${stateInfo.name} tax calculated using graduated brackets.`,
+    };
+  }
+
+  const maxBracketEstimate =
+    filingStatus === FilingStatus.MARRIED_JOINT
+      ? STATE_TAX_CONSTANTS.BRACKET_ESTIMATE_MFJ
+      : STATE_TAX_CONSTANTS.BRACKET_ESTIMATE_SINGLE;
+  const incomeFactor = Math.min(adjustedGrossIncome / maxBracketEstimate, 1);
+  const effectiveRate = stateInfo.minRate + (stateInfo.maxRate - stateInfo.minRate) * incomeFactor;
+
+  return {
+    tax: adjustedGrossIncome * effectiveRate,
+    effectiveRate,
+    message: `${stateInfo.name} tax estimated using effective rate interpolation.`,
   };
 };
 
@@ -181,56 +241,34 @@ export const calculateTax = (input: UserInput): TaxResult => {
     }
   }
 
-  // 7. State Tax (Logic based on CSV Categories)
-  const stateInfo = STATES_LIST.find(s => s.name === input.state);
+  // 7. State Tax
   let stateTax = 0;
   let stateRateUsed = 0;
 
-  if (stateInfo) {
-    if (stateInfo.category === 'none') {
-      stateTax = 0;
-      stateRateUsed = 0;
-      messages.push(`${stateInfo.name} has no state income tax.`);
-    } else if (stateInfo.category === 'flat') {
-      // For flat tax states, apply the minRate (which equals maxRate)
-      stateRateUsed = stateInfo.minRate;
-      stateTax = adjustedGrossIncome * stateRateUsed;
-      messages.push(`${stateInfo.name} has a flat income tax rate of ${(stateRateUsed * 100).toFixed(2)}%.`);
-    } else {
-      // Graduated (Progressive)
-      // Check if we have explicit brackets defined
-      const specificBrackets = STATE_GRADUATED_BRACKETS[stateInfo.name]?.[input.filingStatus];
+  if (input.hasMultiStateIncome && input.secondState && input.secondState !== input.state) {
+    const secondStateShare = Math.min(Math.max(input.secondStateIncomeShare || 50, 1), 99) / 100;
+    const primaryStateShare = 1 - secondStateShare;
+    const primaryIncome = adjustedGrossIncome * primaryStateShare;
+    const secondIncome = adjustedGrossIncome * secondStateShare;
 
-      if (specificBrackets) {
-        let remainingStateIncome = adjustedGrossIncome;
-        let previousStateLimit = 0;
-        stateTax = 0;
+    const primaryStateCalc = calculateStateTaxForIncome(input.state, primaryIncome, input.filingStatus);
+    const secondStateCalc = calculateStateTaxForIncome(input.secondState, secondIncome, input.filingStatus);
 
-        for (const bracket of specificBrackets) {
-          if (remainingStateIncome <= 0) break;
+    stateTax = primaryStateCalc.tax + secondStateCalc.tax;
+    stateRateUsed = adjustedGrossIncome > 0 ? stateTax / adjustedGrossIncome : 0;
 
-          const bracketWidth = bracket.limit - previousStateLimit;
-          const taxableInThisBracket = Math.min(remainingStateIncome, bracketWidth);
-          stateTax += taxableInThisBracket * bracket.rate;
-
-          remainingStateIncome -= taxableInThisBracket;
-          previousStateLimit = bracket.limit;
-        }
-        // Calculate effective rate for UI display
-        stateRateUsed = adjustedGrossIncome > 0 ? stateTax / adjustedGrossIncome : 0;
-        messages.push(`${stateInfo.name} tax calculated using graduated brackets.`);
-      } else {
-        // Fallback for graduated states where specific brackets aren't yet mapped
-        const maxBracketEstimate = input.filingStatus === FilingStatus.MARRIED_JOINT 
-          ? STATE_TAX_CONSTANTS.BRACKET_ESTIMATE_MFJ 
-          : STATE_TAX_CONSTANTS.BRACKET_ESTIMATE_SINGLE;
-        const incomeFactor = Math.min(adjustedGrossIncome / maxBracketEstimate, 1);
-        
-        stateRateUsed = stateInfo.minRate + ((stateInfo.maxRate - stateInfo.minRate) * incomeFactor);
-        stateTax = adjustedGrossIncome * stateRateUsed;
-        messages.push(`${stateInfo.name} tax estimated using effective rate interpolation.`);
-      }
-    }
+    messages.push(
+      `Multi-state estimate: ${Math.round(primaryStateShare * 100)}% income in ${input.state}, ${Math.round(
+        secondStateShare * 100
+      )}% in ${input.secondState}.`
+    );
+    messages.push(primaryStateCalc.message);
+    messages.push(secondStateCalc.message);
+  } else {
+    const singleStateCalc = calculateStateTaxForIncome(input.state, adjustedGrossIncome, input.filingStatus);
+    stateTax = singleStateCalc.tax;
+    stateRateUsed = singleStateCalc.effectiveRate;
+    messages.push(singleStateCalc.message);
   }
 
   // 8. Capital Gains Tax (for stock income)
